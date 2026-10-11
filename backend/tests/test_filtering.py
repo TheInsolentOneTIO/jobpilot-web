@@ -1,11 +1,12 @@
 import asyncio
 import os
+import socket
 import unittest
 from unittest.mock import patch
 
 import httpx
 
-from app.main import cors_origins, fetch_trudvsem, filter_vacancies, matches_profile
+from app.main import cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, request_failure_kind
 
 
 def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", salary_min=180000, salary_max=250000, duty="Удалённая работа"):
@@ -80,3 +81,66 @@ class ProfileFilteringTests(unittest.TestCase):
         self.assertEqual(source_total, 1)
         self.assertEqual(len(items), 1)
         self.assertIsNone(error)
+
+    def test_read_timeout_is_retried_once_and_logged_without_query_data(self):
+        async def run():
+            calls = 0
+
+            async def handler(request):
+                nonlocal calls
+                calls += 1
+                raise httpx.ReadTimeout("read timed out", request=request)
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                with self.assertLogs("uvicorn.error", level="INFO") as logs:
+                    result = await fetch_trudvsem(client, "private search", 100, 0, "", "", None, "any")
+            return calls, result, logs.output
+
+        calls, (_, _, error), logs = asyncio.run(run())
+        self.assertEqual(calls, 2)
+        self.assertEqual(error["status"], 504)
+        self.assertTrue(any("host=opendata.trudvsem.ru" in line and "failure=read_timeout" in line for line in logs))
+        self.assertFalse(any("private search" in line for line in logs))
+
+    def test_temporary_server_error_is_retried_once(self):
+        async def run():
+            calls = 0
+
+            async def handler(request):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return httpx.Response(503, request=request)
+                return httpx.Response(200, json={"results": {"vacancies": [{"vacancy": vacancy()}]}}, request=request)
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                result = await fetch_trudvsem(client, "", 100, 0, "", "", None, "any")
+            return calls, result
+
+        calls, (items, _, error) = asyncio.run(run())
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(items), 1)
+        self.assertIsNone(error)
+
+    def test_forbidden_response_is_not_retried(self):
+        async def run():
+            calls = 0
+
+            async def handler(request):
+                nonlocal calls
+                calls += 1
+                return httpx.Response(403, request=request)
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                result = await fetch_trudvsem(client, "", 100, 0, "", "", None, "any")
+            return calls, result
+
+        calls, (_, _, error) = asyncio.run(run())
+        self.assertEqual(calls, 1)
+        self.assertEqual(error["status"], 403)
+
+    def test_dns_error_is_classified_for_diagnostics(self):
+        request = httpx.Request("GET", "https://opendata.trudvsem.ru")
+        error = httpx.ConnectError("dns failed", request=request)
+        error.__cause__ = socket.gaierror("name not known")
+        self.assertEqual(request_failure_kind(error), "dns_error")
