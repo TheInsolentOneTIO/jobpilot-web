@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import socket
 import time
 from pathlib import Path
@@ -124,15 +125,45 @@ def format_matches(vacancy: dict[str, Any], work_format: str) -> bool:
     return False
 
 
-def city_matches(vacancy: dict[str, Any], city: str, remote_allowed: bool) -> bool:
+def address_cities(vacancy: dict[str, Any]) -> list[str]:
+    """Extract city names from the source's structured work addresses."""
+    addresses = vacancy.get("addresses")
+    if not isinstance(addresses, dict):
+        return []
+    entries = addresses.get("address")
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return []
+    cities = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("location"), str):
+            return []
+        parts = [normalize(part) for part in re.split(r"[,;]", entry["location"]) if part.strip()]
+        found = [match.group(1).strip() for part in parts if (match := re.fullmatch(r"(?:город\s+|г(?:\.\s*|\s+))(.+)", part))]
+        if not found and parts and parts[0] in {"москва", "санкт-петербург"}:
+            found = [parts[0]]
+        if not found:
+            return []
+        cities.extend(found)
+    return cities
+
+
+def city_matches(vacancy: dict[str, Any], city: str) -> bool:
     requested = normalize(city)
     if not requested:
         return True
-    region = normalize((vacancy.get("region") or {}).get("name"))
-    addresses = normalize((vacancy.get("addresses") or {}).get("address"))
-    if requested in region or requested in addresses:
-        return True
-    return remote_allowed and format_matches(vacancy, "Удалённо")
+    requested = re.sub(r"^(?:город\s+|г(?:\.\s*|\s+))", "", requested)
+    cities = address_cities(vacancy)
+    if not cities or any(actual != requested for actual in cities):
+        return False
+    region_data = vacancy.get("region")
+    region = normalize(region_data.get("name")) if isinstance(region_data, dict) else ""
+    if requested == "москва" and region and region not in {"москва", "город москва", "г. москва", "г москва"}:
+        return False
+    if requested == "санкт-петербург" and region and region not in {"санкт-петербург", "город санкт-петербург", "г. санкт-петербург", "г санкт-петербург"}:
+        return False
+    return True
 
 
 def salary_matches(vacancy: dict[str, Any], salary_min: int | None) -> bool:
@@ -151,13 +182,14 @@ def matches_profile(vacancy: dict[str, Any], profession: str, city: str, salary_
     return (
         profession_matches(vacancy, profession)
         and format_matches(vacancy, work_format)
-        and city_matches(vacancy, city, normalize(work_format) in {"любой", "any"} or normalize(work_format).startswith("удален"))
+        and city_matches(vacancy, city)
         and salary_matches(vacancy, salary_min)
     )
 
 
 def to_item(vacancy: dict[str, Any]) -> dict[str, Any]:
-    return {"id": f"trudvsem-{vacancy['id']}", "title": vacancy.get("job-name") or "Без названия", "company": (vacancy.get("company") or {}).get("name"), "salary_from": vacancy.get("salary_min"), "salary_to": vacancy.get("salary_max"), "currency": vacancy.get("currency"), "city": (vacancy.get("region") or {}).get("name"), "url": vacancy.get("vac_url"), "source": "Работа России"}
+    cities = address_cities(vacancy)
+    return {"id": f"trudvsem-{vacancy['id']}", "title": vacancy.get("job-name") or "Без названия", "company": (vacancy.get("company") or {}).get("name"), "salary_from": vacancy.get("salary_min"), "salary_to": vacancy.get("salary_max"), "currency": vacancy.get("currency"), "city": cities[0].title() if cities and len(set(cities)) == 1 else None, "url": vacancy.get("vac_url"), "source": "Работа России"}
 
 
 def filter_vacancies(records: list[Any], profession: str, city: str, salary_min: int | None, work_format: str) -> list[dict[str, Any]]:

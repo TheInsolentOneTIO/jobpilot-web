@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import httpx
 
-from app.main import cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, request_failure_kind
+from app.main import city_matches, cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, request_failure_kind, vacancies
 
 
 def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", salary_min=180000, salary_max=250000, duty="Удалённая работа"):
@@ -14,6 +14,7 @@ def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", 
         "id": vacancy_id,
         "job-name": title,
         "region": {"name": region},
+        "addresses": {"address": [{"location": "г Москва, улица Тестовая, 1" if region == "Москва" else "Брянская область, г Брянск, улица Тестовая, 1"}]},
         "salary_min": salary_min,
         "salary_max": salary_max,
         "duty": duty,
@@ -33,8 +34,51 @@ class ProfileFilteringTests(unittest.TestCase):
     def test_moscow_rejects_other_region_when_vacancy_is_not_remote(self):
         self.assertFalse(matches_profile(vacancy(region="Брянская область", duty="Работа в офисе"), "Python-разработчик", "Москва", 180000, "Офис"))
 
-    def test_remote_vacancy_can_match_another_region_when_remote_is_allowed(self):
-        self.assertTrue(matches_profile(vacancy(region="Брянская область"), "Python-разработчик", "Москва", 180000, "Удалённо"))
+    def test_remote_vacancy_in_another_city_is_rejected(self):
+        self.assertFalse(matches_profile(vacancy(region="Брянская область"), "Python-разработчик", "Москва", 180000, "Удалённо"))
+
+    def test_city_matches_structured_work_address_exactly(self):
+        cases = [
+            ("город Москва", "г Москва, улица Тестовая", "Москва", True),
+            ("Московская область", "Московская область, г Химки, Московская улица", "Москва", False),
+            ("Московская область", "Московская область, г Мытищи, Москва улица", "Москва", False),
+            ("Московская область", "Московская область, г Химки, улица Тестовая", "Химки", True),
+            ("Московская область", "Московская область, г Мытищи, улица Тестовая", "Мытищи", True),
+            ("город Санкт-Петербург", "г Санкт-Петербург, улица Тестовая", "Санкт-Петербург", True),
+            ("город Санкт-Петербург", "г Санкт-Петербург, улица Тестовая", "Москва", False),
+            ("Московская область", "Московская область, г Москва, улица Тестовая", "Москва", False),
+            ("Москва", "улица Тестовая, 1", "Москва", False),
+            ("Москва", "улица Тестовая, 1", "", True),
+        ]
+        for region, location, query, expected in cases:
+            with self.subTest(location=location, query=query):
+                item = vacancy(region=region)
+                item["addresses"] = {"address": [{"location": location}]}
+                self.assertEqual(city_matches(item, query), expected)
+
+    def test_unknown_or_mixed_addresses_do_not_match_a_city(self):
+        item = vacancy()
+        item.pop("addresses")
+        self.assertFalse(city_matches(item, "Москва"))
+        self.assertTrue(city_matches(item, ""))
+        item["addresses"] = {"address": [{"location": "г Москва, улица Тестовая"}, {"location": "г Химки, улица Тестовая"}]}
+        self.assertFalse(city_matches(item, "Москва"))
+
+    def test_city_filter_runs_on_each_source_page_before_result_limit(self):
+        async def run():
+            async def handler(request):
+                offset = request.url.params["offset"]
+                other = vacancy(vacancy_id=f"other-{offset}", region="Брянская область")
+                other["addresses"] = {"address": [{"location": "Московская область, г Химки, Московская улица"}]}
+                moscow = vacancy(vacancy_id=f"moscow-{offset}")
+                return httpx.Response(200, json={"results": {"vacancies": [{"vacancy": other}, {"vacancy": moscow}]}})
+            transport = httpx.MockTransport(handler)
+            real_client = httpx.AsyncClient
+            with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport)):
+                return [await vacancies(profession="", skills="", city="Москва", salary_min=None, work_format="any", page=page, per_page=1) for page in (0, 1)]
+        pages = asyncio.run(run())
+        self.assertEqual([[item["id"] for item in page["items"]] for page in pages], [["trudvsem-moscow-0"], ["trudvsem-moscow-1"]])
+        self.assertTrue(all(page["matched_total"] == 1 and page["source_total"] == 2 for page in pages))
 
     def test_unknown_format_is_not_a_match(self):
         self.assertFalse(matches_profile(vacancy(duty="Полный рабочий день"), "Python-разработчик", "Москва", 180000, "Удалённо"))
