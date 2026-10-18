@@ -159,10 +159,12 @@ def city_matches(vacancy: dict[str, Any], city: str) -> bool:
         return False
     region_data = vacancy.get("region")
     region = normalize(region_data.get("name")) if isinstance(region_data, dict) else ""
-    if requested == "москва" and region and region not in {"москва", "город москва", "г. москва", "г москва"}:
-        return False
-    if requested == "санкт-петербург" and region and region not in {"санкт-петербург", "город санкт-петербург", "г. санкт-петербург", "г санкт-петербург"}:
-        return False
+    region_code = str(region_data.get("region_code") or "").strip() if isinstance(region_data, dict) else ""
+    if requested in {"москва", "санкт-петербург"}:
+        aliases = {requested, f"город {requested}", f"г. {requested}", f"г {requested}"}
+        expected_code = "77" if requested == "москва" else "78"
+        if region not in aliases or (region_code and not region_code.startswith(expected_code)):
+            return False
     return True
 
 

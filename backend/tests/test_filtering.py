@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import httpx
 
-from app.main import city_matches, cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, request_failure_kind, vacancies
+from app.main import app, city_matches, cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, normalize, request_failure_kind, vacancies
+from fastapi.testclient import TestClient
 
 
 def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", salary_min=180000, salary_max=250000, duty="Удалённая работа"):
@@ -63,6 +64,35 @@ class ProfileFilteringTests(unittest.TestCase):
         self.assertTrue(city_matches(item, ""))
         item["addresses"] = {"address": [{"location": "г Москва, улица Тестовая"}, {"location": "г Химки, улица Тестовая"}]}
         self.assertFalse(city_matches(item, "Москва"))
+
+    def test_moscow_rejects_missing_or_conflicting_region_even_for_remote(self):
+        for region in (None, {}, {"name": "Москва", "region_code": "7900000000000"}):
+            with self.subTest(region=region):
+                item = vacancy()
+                item["region"] = region
+                self.assertFalse(matches_profile(item, "", "Москва", None, "Удалённо"))
+        item = vacancy()
+        item["region"] = {"name": "Москва", "region_code": "7700000000000"}
+        self.assertTrue(matches_profile(item, "", "Москва", None, "Удалённо"))
+
+    def test_lifter_birobidzhan_moscow_text_is_excluded_from_api(self):
+        item = vacancy(vacancy_id="6d7c4aa0-a1b5-11f0-bb7b-5dad8918ad3a", title="Лифтер", region="Еврейская автономная область")
+        item["company"] = {"name": "ВНИИИНСТРУМЕНТ"}
+        item["region"]["region_code"] = "7900000000000"
+        item["addresses"] = {"address": [{"location": "Еврейская автономная область, г Биробиджан, СОТ Радуга территория, Большая улица, 49, Москва, Большая Семёновская улица, 49"}]}
+        # The old implementation searched the string representation of the whole address list.
+        self.assertIn("москва", normalize(item["addresses"]["address"]))
+        self.assertFalse(city_matches(item, "Москва"))
+        self.assertFalse(matches_profile(item, "", "Москва", None, "Удалённо"))
+
+        async def handler(request):
+            return httpx.Response(200, json={"results": {"vacancies": [{"vacancy": item}]}})
+        real_client = httpx.AsyncClient
+        with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler))):
+            response = TestClient(app).get("/api/vacancies", params={"city": "Москва", "work_format": "any", "per_page": 20})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source_total"], 1)
+        self.assertEqual(response.json()["items"], [])
 
     def test_city_filter_runs_on_each_source_page_before_result_limit(self):
         async def run():
