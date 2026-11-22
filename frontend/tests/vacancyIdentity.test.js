@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { claimDecision, isViewed, migrateViewed, normalizedUrl, swipeDecision, uniqueUnseen } from '../src/vacancyIdentity.js'
+import { claimDecision, collapseConsecutive, isViewed, migrateViewed, normalizedUrl, swipeDecision, uniqueUnseen } from '../src/vacancyIdentity.js'
+import { searchPages } from '../src/searchPages.js'
 
 const job = (id, url, source = 'Работа России') => ({ id, url, source, title: 'Менеджер' })
 
@@ -78,4 +79,23 @@ test('different addresses, conditions or missing details are never grouped', () 
   const otherSchedule = {...common, id: '3', url: 'https://example.org/3', work_conditions: {...common.work_conditions, schedule: 'Ночной'}}
   const unknown = {...common, id: '4', url: 'https://example.org/4', work_address: null}
   assert.equal(uniqueUnseen([common, otherAddress, otherSchedule, unknown], new Set(), []).length, 4)
+})
+
+test('folds a run of twenty visually identical postings across pages without deciding the alternatives', async () => {
+  const postings = Array.from({length: 20}, (_, i) => ({...job(`a-${i}`, `https://example.org/a/${i}`), title: 'Водитель электроштабелера', company: 'Ашан', city: null, salary_from: 90000, salary_to: 90000, currency: 'руб.', work_address: `Адрес ${i}`, work_conditions: {duty: `Работа ${i}`}}))
+  const next = {...job('next', 'https://example.org/next'), company: 'Другая компания'}
+  const fetcher = async (url) => ({ok: true, json: async () => ({items: new URL(url).searchParams.get('page') === '0' ? postings.slice(0, 10) : [...postings.slice(10), next]})})
+  const fetched = await searchPages('https://api.example', {}, 200, null, fetcher)
+  const seen = new Set(), lock = {current: false}
+  const queue = collapseConsecutive(uniqueUnseen(fetched.items, seen, []))
+  assert.equal(queue.length, 2)
+  assert.equal(queue[0].alternatives.length, 19)
+  assert.equal(queue[0].alternatives[0].url, postings[1].url)
+  assert.equal(claimDecision(lock, seen, queue[0]), true)
+  assert.equal(isViewed(seen, postings[1]), false)
+  assert.equal(queue.slice(1).find((item) => !isViewed(seen, item)).id, 'next')
+  const reloaded = collapseConsecutive(uniqueUnseen(fetched.items, new Set(JSON.parse(JSON.stringify([...seen]))), []))
+  assert.equal(reloaded.length, 2)
+  assert.equal(reloaded[0].alternatives.length, 18)
+  assert.equal(collapseConsecutive([postings[0], next, postings[1]]).length, 3)
 })

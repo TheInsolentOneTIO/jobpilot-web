@@ -83,6 +83,24 @@ export function uniqueUnseen(jobs, seen, liked) {
   return groups.filter((group) => !isViewed(known, group))
 }
 
+// This is a presentation-only bundle: each posting keeps its own decision and identity.
+export function collapseConsecutive(jobs) {
+  const clean = (value) => typeof value === 'string' ? value.normalize('NFKC').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim() : ''
+  const signature = (job) => {
+    const title = clean(job.title), company = clean(job.company)
+    if (!title || !company) return null
+    return JSON.stringify([title, company, clean(job.city), job.salary_from || null, job.salary_to || null, clean(job.currency), clean(job.source)])
+  }
+  const result = []
+  let last = null
+  for (const job of jobs) {
+    const key = signature(job)
+    if (key && key === last) result[result.length - 1].alternatives.push(job)
+    else { result.push({...job, alternatives: []}); last = key }
+  }
+  return result
+}
+
 export function claimDecision(lock, seen, job) {
   if (!job || lock.current || isViewed(seen, job)) return false
   lock.current = true
