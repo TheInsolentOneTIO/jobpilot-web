@@ -25,6 +25,35 @@ def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", 
 
 
 class ProfileFilteringTests(unittest.TestCase):
+    def test_abakan_teacher_list_includes_source_details_without_a_card_request(self):
+        # Field layout from the source list. Only the public fields relevant to this regression.
+        raw = {
+            "id": "18efd295-d1fc-11f1-95a3-65cdd4930749",
+            "job-name": "Преподаватель английского языка", "company": {"name": "Языковая школа Окей"},
+            "vac_url": "https://trudvsem.ru/vacancy/card/1027700404797/18efd295-d1fc-11f1-95a3-65cdd4930749",
+            "duty": "Проведение уроков английского языка в школе и онлайн",
+            "requirements": "Уровень английского не ниже В2",
+            "requirement": {"qualification": "Условия: Работа в школе и онлайн", "education": "Не указано", "experience": 0},
+            "schedule": "Полный рабочий день",
+            "addresses": {"address": [{"location": "Хакасия республика, г Абакан, Пушкина улица, 123"}]},
+        }
+        calls = []
+        def source(request):
+            calls.append((request.url.path, dict(request.url.params)))
+            return httpx.Response(200, json={"status": "200", "results": {"vacancies": [{"vacancy": raw}]}})
+        with patch("app.main.source_client", return_value=httpx.AsyncClient(transport=httpx.MockTransport(source))):
+            r = TestClient(app).get("/api/vacancies", params={"city": "Абакан", "work_format": "any", "source_limit": 50})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(calls, [("/api/v1/vacancies", {"text": "", "limit": "50", "offset": "0"})])
+        item, = r.json()["items"]
+        self.assertEqual(item["url"], raw["vac_url"])
+        self.assertEqual(item["work_addresses"], [raw["addresses"]["address"][0]["location"]])
+        fields = item["work_conditions"]
+        for name in ("duty", "requirements", "schedule"):
+            self.assertEqual(fields[name], raw[name])
+        self.assertEqual(fields["qualification"], raw["requirement"]["qualification"])
+        self.assertEqual(fields["experience_years"], 0)
+
     def test_full_vacancy_by_id_returns_duties_and_all_workplaces(self):
         item = vacancy(duty="<ul><li>Вести закупки</li></ul>")
         item["addresses"]["address"].append({"location": "г Москва, улица Другая, 2"})
@@ -44,7 +73,11 @@ class ProfileFilteringTests(unittest.TestCase):
     def test_full_vacancy_timeout_and_missing_record(self):
         def timeout(request):
             raise httpx.ReadTimeout("timed out")
-        for handler, status in [(timeout, 504), (lambda _: httpx.Response(200, json={"results": {"vacancies": []}}), 404)]:
+        for handler, status in [
+            (timeout, 504), (lambda _: httpx.Response(504), 504),
+            (lambda _: httpx.Response(200, json={"results": {"vacancies": None}}), 502),
+            (lambda _: httpx.Response(200, json={"results": {"vacancies": []}}), 404),
+        ]:
             with patch("app.main.source_client", return_value=httpx.AsyncClient(transport=httpx.MockTransport(handler))):
                 self.assertEqual(TestClient(app).get("/api/vacancies/123/1").status_code, status)
 

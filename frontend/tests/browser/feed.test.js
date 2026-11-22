@@ -110,14 +110,16 @@ test('loads missing details once on demand and keeps the original accessible on 
   const context = await browser.newContext({viewport: {width: 375, height: 480}, reducedMotion: 'reduce'})
   t.after(() => context.close())
   const page = await context.newPage()
-  const brief = {...second, id: 'trudvsem-3', url: 'https://trudvsem.ru/vacancy/card/123/3'}
-  const last = {...third, id: 'trudvsem-4', url: 'https://trudvsem.ru/vacancy/card/123/4'}
+  const brief = {...second, id: 'trudvsem-3', url: 'https://trudvsem.ru/vacancy/card/123/3',
+    work_conditions: {experience_years: 0, education: 'Высшее'}}
+  const last = {...third, id: 'trudvsem-4', url: 'https://trudvsem.ru/vacancy/card/123/4', work_addresses: ['Адрес из списка']}
   await page.route('**/api/vacancies?**', r => r.fulfill({json: {items: [brief, last], source_total: 2, matched_total: 2}}))
   let calls = 0
   await page.route('**/api/vacancies/123/*', r => {
     calls++
     return r.request().url().endsWith('/3') ? r.fulfill({json: {...brief, work_addresses: ['Первый адрес', 'Второй адрес'],
-      work_conditions: {duty: '<ul><li>Подготовка договоров</li><li>Проверка отчётов</li></ul>', schedule: 'По сменам'}}})
+      work_conditions: {duty: '<ul><li>Подготовка договоров</li><li>Проверка отчётов</li></ul>', schedule: 'По сменам',
+        education: '   ', experience_years: null}}})
       : r.fulfill({status: 504, json: {detail: 'Timeout'}})
   })
   await page.goto(origin, {waitUntil: 'domcontentloaded'})
@@ -129,6 +131,8 @@ test('loads missing details once on demand and keeps the original accessible on 
   await details.getByText('Должностные обязанности', {exact: true}).waitFor()
   assert.match(await details.innerText(), /• Подготовка договоров\s+• Проверка отчётов/)
   assert.match(await details.innerText(), /Первый адрес\s+Второй адрес/)
+  assert.match(await details.innerText(), /Без опыта/)
+  assert.match(await details.innerText(), /Высшее/)
   assert.equal(await details.locator(':scope > :first-child').getAttribute('href'), brief.url)
   await toggle.click()
   await toggle.click()
@@ -138,7 +142,50 @@ test('loads missing details once on demand and keeps the original accessible on 
   await details.getByRole('status').filter({hasText: 'Не удалось'}).waitFor()
   assert.equal(await details.locator('a').getAttribute('href'), last.url)
   assert.match(await details.innerText(), /Гибкий график/)
+  assert.match(await details.innerText(), /Адрес из списка/)
   await page.getByRole('button', {name: 'История', exact: true}).click()
   assert.equal(await page.locator('.history-tags li').innerText(), 'По сменам')
   assert.equal(calls, 2)
+})
+
+test('renders the Abakan teacher list fields immediately and omits absent fields', async t => {
+  const page = await browser.newPage()
+  t.after(() => page.close())
+  const job = {...first, title: 'Преподаватель английского языка', company: 'Языковая школа Окей',
+    city: 'Абакан', work_address: null,
+    work_conditions: {duty: 'Уроки в школе и онлайн', requirements: 'Английский В2',
+      qualification: '<p>Условия: Работа в школе и онлайн</p>', schedule: 'Полный рабочий день',
+      required_education: 'Не указано', experience_years: 0}}
+  let detailCalls = 0
+  await page.route('**/api/vacancies/*/*', route => { detailCalls++; return route.fulfill({status: 504}) })
+  await page.route('**/api/vacancies?**', route => route.fulfill({json: {items: [job], source_total: 1}}))
+  await page.goto(origin, {waitUntil: 'domcontentloaded'})
+  await page.getByRole('button', {name: 'Подробнее о вакансии'}).click()
+  const panel = page.getByRole('region', {name: 'Подробности вакансии'})
+  const sections = await panel.locator('dl > div').evaluateAll(rows => Object.fromEntries(
+    rows.map(row => [row.querySelector('dt').textContent, row.querySelector('dd').textContent])))
+  assert.deepEqual(sections, {'Должностные обязанности': 'Уроки в школе и онлайн', 'Место работы': 'Абакан',
+    'Требования': 'Английский В2', 'Условия': 'Работа в школе и онлайн', 'График': 'Полный рабочий день', 'Опыт': 'Без опыта'})
+  assert.equal(detailCalls, 0)
+})
+
+test('a stalled detail request with no list fields leaves the original link and one explanation', async t => {
+  const page = await browser.newPage()
+  t.after(() => page.close())
+  const brief = {id: 'trudvsem-3', title: 'Вакансия', url: 'https://trudvsem.ru/vacancy/card/123/3'}
+  await page.route('**/api/vacancies?**', route => route.fulfill({json: {items: [brief], source_total: 1}}))
+  await page.route('**/api/vacancies/123/3', () => {}) // Leave the request pending until the browser deadline.
+  await page.goto(origin, {waitUntil: 'domcontentloaded'})
+  const toggle = page.getByRole('button', {name: 'Подробнее о вакансии'})
+  await toggle.waitFor()
+  await page.clock.install()
+  const requested = page.waitForRequest('**/api/vacancies/123/3')
+  await toggle.click()
+  await requested
+  await page.clock.fastForward(20_001)
+  const details = page.getByRole('region', {name: 'Подробности вакансии'})
+  await details.getByRole('status').filter({hasText: 'Не удалось'}).waitFor()
+  assert.equal(await details.locator('p').count(), 1)
+  assert.equal(await details.locator('dl').count(), 0)
+  assert.equal(await details.getByRole('link').getAttribute('href'), brief.url)
 })

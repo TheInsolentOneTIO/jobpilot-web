@@ -1,9 +1,7 @@
 import {memo, useEffect, useRef, useState} from 'react'
 import {ArrowUpRight, ChevronDown} from 'lucide-react'
 
-function plainText(value) {
-  if (typeof value !== 'string') return ''
-  if (!/[<&]/.test(value)) return value.trim()
+function stripMarkup(value) {
   // Source descriptions may contain HTML. Read only text from an inert fragment.
   const template = document.createElement('template')
   template.innerHTML = value
@@ -16,6 +14,12 @@ function plainText(value) {
   return fragment.textContent.replace(/\u00a0/g, ' ').replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, '\n\n').trim()
 }
 
+function plainText(value) {
+  if (typeof value !== 'string') return ''
+  const text = /[<&]/.test(value) ? stripMarkup(value) : value.trim()
+  return /^не указан(?:о|а|ы)?[.!]?$/iu.test(text) ? '' : text
+}
+
 const years = new Intl.NumberFormat('ru', {style: 'unit', unit: 'year', unitDisplay: 'long'})
 function experienceText(value) {
   if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value.trim()))) {
@@ -26,8 +30,8 @@ function experienceText(value) {
   return plainText(value)
 }
 
-function joinText(...values) {
-  return [...new Set(values.map(plainText).filter(Boolean))].join('\n')
+function joinText(...texts) {
+  return [...new Set(texts.filter(Boolean))].join('\n')
 }
 
 function originalUrl(value) {
@@ -39,7 +43,8 @@ function originalUrl(value) {
 }
 
 function addresses(job) {
-  return joinText(...(Array.isArray(job.work_addresses) ? job.work_addresses : []), job.work_address)
+  if (!job) return []
+  return [...(Array.isArray(job.work_addresses) ? job.work_addresses : []), job.work_address].map(plainText)
 }
 
 export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
@@ -50,18 +55,21 @@ export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
   const url = originalUrl(job.url)
   const conditions = {...job.work_conditions}
   for (const [key, value] of Object.entries(extra?.work_conditions || {})) {
-    if (value != null && value !== '') conditions[key] = value
+    if (typeof conditions[key] !== 'number' && !plainText(conditions[key])) conditions[key] = value
   }
-  const address = addresses(extra || {}) || addresses(job)
+  const address = joinText(...addresses(job), ...addresses(extra))
 
   async function toggle() {
     setOpen(!open)
     if (open || extra || request.current || !url || !['trudvsem.ru', 'www.trudvsem.ru'].includes(url.hostname)) return
-    if (plainText(conditions.duty) && address) return
+    // Salary, city or schedule alone are a shortlist entry. Source prose is already usable.
+    if ([conditions.duty, conditions.description, conditions.requirements, conditions.qualification,
+      conditions.conditions, conditions.terms].some(value => plainText(value))) return
     const ids = url.pathname.match(/^\/vacancy\/card\/([\w-]{1,64})\/([\w-]{1,64})\/?$/)
     if (!ids) return
     const controller = new AbortController()
     request.current = controller
+    const deadline = window.setTimeout(() => controller.abort('detail-timeout'), 20_000)
     setStatus('loading')
     try {
       const response = await fetch(`${apiUrl}/api/vacancies/${ids[1]}/${ids[2]}`, {signal: controller.signal})
@@ -77,21 +85,25 @@ export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
         })
       }
     } catch {
-      if (!controller.signal.aborted) setStatus('error')
+      if (!controller.signal.aborted || controller.signal.reason === 'detail-timeout') setStatus('error')
     } finally {
+      window.clearTimeout(deadline)
       request.current = null
     }
   }
+  // Some publishers put explicitly labelled working conditions in the qualification field.
+  const qualification = open ? plainText(conditions.qualification) : ''
+  const labelledTerms = qualification.match(/^условия(?:\s+работы)?\s*:\s*([\s\S]*)$/iu)
   const rows = open ? [
     ['Должностные обязанности', plainText(conditions.duty)],
     ['Место работы', address || plainText(extra?.city || job.city)],
     ['Описание', plainText(conditions.description)],
-    ['Требования', joinText(conditions.requirements, conditions.qualification)],
+    ['Требования', joinText(plainText(conditions.requirements), labelledTerms ? '' : qualification)],
     ['Образование', plainText(conditions.required_education) || plainText(conditions.education)],
     ['Опыт', experienceText(conditions.experience_years ?? conditions.experience)],
     ['График', plainText(conditions.schedule)],
     ['Занятость', plainText(conditions.employment)],
-    ['Условия', joinText(conditions.conditions, conditions.terms)],
+    ['Условия', joinText(plainText(conditions.conditions), plainText(conditions.terms), labelledTerms?.[1])],
   ].filter(([, text]) => text) : []
   return <div className="vacancy-details">
     <button type="button" aria-expanded={open} aria-controls="vacancy-description" onClick={toggle}>
@@ -101,11 +113,11 @@ export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
       {open && url && <a className="original-vacancy" href={url.href} target="_blank" rel="noopener noreferrer">
         Открыть вакансию на «Работе России» <ArrowUpRight aria-hidden="true"/>
       </a>}
-      {open && status === 'loading' && <p role="status">Загружаем подробности…</p>}
-      {open && status === 'error' && <p role="status">Не удалось загрузить полные сведения.</p>}
       {open && (rows.length ? <dl>{rows.map(([label, text]) =>
         <div key={label}><dt>{label}</dt><dd>{text}</dd></div>
       )}</dl> : status !== 'loading' && status !== 'error' && <p>Дополнительных сведений в ответе нет.</p>)}
+      {open && status === 'loading' && <p role="status">Загружаем дополнительные сведения…</p>}
+      {open && status === 'error' && <p role="status">Не удалось загрузить дополнительные сведения.</p>}
     </div>
   </div>
 })

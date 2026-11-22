@@ -309,10 +309,13 @@ async def vacancy_details(company_code: SourceId, vacancy_id: SourceId) -> dict[
         except httpx.TimeoutException:
             raise HTTPException(504, "Work Russia API request timed out")
         except httpx.HTTPStatusError as error:
-            raise HTTPException(404 if error.response.status_code == 404 else 502, "Vacancy unavailable")
+            status = error.response.status_code
+            raise HTTPException(status if status in {404, 429, 504} else 502, "Vacancy unavailable")
         except (httpx.RequestError, KeyError, ValueError, TypeError):
             raise HTTPException(502, "Work Russia API is unavailable")
-    for row in rows if isinstance(rows, list) else []:
+    if not isinstance(rows, list):
+        raise HTTPException(502, "Invalid vacancy response from Work Russia API")
+    for row in rows:
         vacancy = row.get("vacancy") if isinstance(row, dict) else None
         if isinstance(vacancy, dict) and vacancy.get("id") == vacancy_id:
             return to_item(vacancy)
