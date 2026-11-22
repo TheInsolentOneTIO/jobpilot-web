@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, ArrowUpRight, RefreshCw } from 'lucide-react'
 import { claimDecision, collapseConsecutive, isViewed, migrateViewed, swipeDecision, uniqueUnseen } from './vacancyIdentity'
 import { createSearchProgress, searchPages } from './searchPages'
 import { logFeedDecision } from './feedDiagnostic'
+import VacancyDetails from './VacancyDetails'
 import './styles.css'
 
 const API_URL = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
@@ -16,7 +17,16 @@ const initialProfile = { profession: '', skills: '', salary: '', city: '', forma
 
 function stored(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback } catch { return fallback } }
 function Icon({ name }) { const d = { feed: 'M4 6h16M4 12h16M4 18h11', heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.9-8.6a5.5 5.5 0 0 0-.1-7.8Z', send: 'm22 2-7 20-4-9-9-4Z', user: 'M20 21a8 8 0 0 0-16 0M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', x: 'M18 6 6 18M6 6l12 12', refresh: 'M20 4v7h-7M4 13a8 8 0 1 0 2-5', history: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2', bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4' }; return <svg viewBox="0 0 24 24"><path d={d[name]} /></svg> }
-function salary(item) { if (item.salary_from && item.salary_to) return `${item.salary_from.toLocaleString('ru-RU')}–${item.salary_to.toLocaleString('ru-RU')} ${item.currency || ''}`; if (item.salary_from) return `от ${item.salary_from.toLocaleString('ru-RU')} ${item.currency || ''}`; if (item.salary_to) return `до ${item.salary_to.toLocaleString('ru-RU')} ${item.currency || ''}`; return 'Зарплата не указана' }
+function salary({salary_from, salary_to, currency}) {
+  const from = Number(salary_from), to = Number(salary_to)
+  const amount = (value) => value.toLocaleString('ru-RU')
+  let text
+  if (from > 0 && to > 0) text = from === to ? amount(from) : `${amount(from)}–${amount(to)}`
+  else if (from > 0) text = `от ${amount(from)}`
+  else if (to > 0) text = `до ${amount(to)}`
+  else return 'Зарплата не указана'
+  return [text, currency].filter(Boolean).join(' ')
+}
 function Empty({ icon, title, text }) { return <div className="empty"><div><Icon name={icon}/></div><h2>{title}</h2><p>{text}</p></div> }
 
 function App() {
@@ -26,7 +36,14 @@ function App() {
   const pointer = useRef(null); const decisionLocked = useRef(false); const exitTimer = useRef(null); const requestSequence = useRef(0); const requestController = useRef(null); const reloadAfterClear = useRef(false); const profileNoticeTimer = useRef(null)
   const [outgoing, setOutgoing] = useState(null), [motion, setMotion] = useState({x: 0, y: 0, dragging: false, exiting: false})
   const likedIds = useMemo(() => new Set(liked.map((job) => job.id)), [liked]); const seenRef = useRef(null); if (!seenRef.current) seenRef.current = migrateViewed(seen, history, liked); const likedRef = useRef(liked); likedRef.current = liked
-  const current = useMemo(() => jobs.find((job) => !isViewed(seenRef.current, job)), [jobs, seen])
+  const [current, next] = useMemo(() => {
+    const cards = []
+    for (const job of jobs) {
+      if (!isViewed(seenRef.current, job)) cards.push(job)
+      if (cards.length === 2) break
+    }
+    return cards
+  }, [jobs, seen])
   useEffect(() => localStorage.setItem(LIKED_KEY, JSON.stringify(liked)), [liked]); useEffect(() => localStorage.setItem(SEEN_KEY, JSON.stringify(seen)), [seen]); useEffect(() => localStorage.setItem(HISTORY_KEY, JSON.stringify(history)), [history])
   useEffect(() => () => { clearTimeout(exitTimer.current); clearTimeout(profileNoticeTimer.current) }, [])
   useEffect(() => { if (!outgoing) decisionLocked.current = false }, [index, outgoing])
@@ -139,9 +156,10 @@ function App() {
     setMotion({x: 0, y: 0, dragging: false, exiting: false})
   }
   const displayedJob = outgoing || current
+  const behind = outgoing ? current : next
   const cardStyle = {transform: `translate3d(${motion.x}px, ${motion.y}px, 0) rotate(${Math.max(-12, Math.min(12, motion.x / 20))}deg)`}
   const nav = [['feed', 'Лента', 'feed'], ['liked', 'Понравившиеся', 'heart'], ['history', 'История', 'history'], ['notifications', 'Уведомления', 'bell']]
-  return <div className="app"><aside><strong><i>✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main className={tab === 'feed' ? 'feed-main' : undefined}>
+  return <div className="app"><aside><strong><i aria-hidden="true">✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main className={tab === 'feed' ? 'feed-main' : undefined}>
     {tab === 'feed' && <section className="feed">
       <header className="feed-header">
         <h1>Лента вакансий</h1>
@@ -154,24 +172,27 @@ function App() {
           <span role="status">{stats.source > 0 ? 'Часть вакансий не загрузилась.' : 'Не удалось загрузить вакансии.'}</span>
           <button type="button" onClick={resumeSearch}>Повторить загрузку</button>
         </div>}
-        {displayedJob && <article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} aria-labelledby="vacancy-title" tabIndex={0}
-          onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}>
-          <h2 id="vacancy-title">{displayedJob.title}</h2>
-          <p className={displayedJob.salary_from || displayedJob.salary_to ? 'card-salary' : 'card-salary unspecified'}>{salary(displayedJob)}</p>
-          <dl className="card-facts">
-            <div><dt>Работодатель</dt><dd>{displayedJob.company || 'Компания не указана'}</dd></div>
-            <div><dt>Город</dt><dd>{displayedJob.city || 'Город не указан'}</dd></div>
-            {profile.format !== 'any' && <div><dt>Формат по фильтру</dt><dd>{profile.format}</dd></div>}
-          </dl>
-          <div className="card-source">
-            <span>Источник</span>
-            <a href={displayedJob.url} target="_blank" rel="noreferrer">{displayedJob.source}<ArrowUpRight aria-hidden="true"/></a>
-          </div>
-          {(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links">
-            <summary>Похожие объявления</summary>
-            {[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}
-          </details>}
-        </article>}
+        {displayedJob && <div className="card-stack">
+          {behind && <div key={`back-${behind.id}`} className={`card-back${outgoing ? ' advancing' : ''}`} aria-hidden="true"/>}
+          <article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} aria-labelledby="vacancy-title" tabIndex={0}
+            onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}>
+            <h2 id="vacancy-title">{displayedJob.title}</h2>
+            <p className={displayedJob.salary_from || displayedJob.salary_to ? 'card-salary' : 'card-salary unspecified'}>{salary(displayedJob)}</p>
+            <dl className="card-facts">
+              <div><dt>Работодатель</dt><dd>{displayedJob.company || 'Компания не указана'}</dd></div>
+              <div><dt>Город</dt><dd>{displayedJob.city || 'Город не указан'}</dd></div>
+              {profile.format !== 'any' && <div><dt>Формат по фильтру</dt><dd>{profile.format}</dd></div>}
+            </dl>
+            <div className="card-source">
+              <span>Источник</span>
+              <a href={displayedJob.url} target="_blank" rel="noreferrer">{displayedJob.source}<ArrowUpRight aria-hidden="true"/></a>
+            </div>
+            {(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links">
+              <summary>Похожие объявления</summary>
+              {[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}
+            </details>}
+          </article>
+        </div>}
         {loading && displayedJob && <p className="feed-loading-more" role="status">Загружаем ещё вакансии…</p>}
         {!loading && status === 'ready' && !displayedJob && (stats.matched === 0
           ? <Empty icon="feed" title="Нет вакансий по вашим фильтрам" text={`Источник проверил ${stats.source} вакансий. Измените фильтры в профиле и обновите ленту.`}/>
@@ -182,6 +203,7 @@ function App() {
         <button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}><ArrowLeft aria-hidden="true"/>Пропустить</button>
         <button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>В понравившиеся<ArrowRight aria-hidden="true"/></button>
       </div>}
+      {displayedJob && <VacancyDetails key={displayedJob.id} conditions={displayedJob.work_conditions || {}}/>}
     </section>}
     {tab === 'liked' && <section><header><div><em>Ваша подборка</em><h1>Понравившиеся</h1></div></header>{!liked.length ? <Empty icon="heart" title="Здесь появятся ваши находки" text="Ставьте лайк вакансиям в ленте, чтобы вернуться к ним позже."/> : <div className="liked">{liked.map((job) => <article key={job.id}><a className="liked-link" href={job.url} target="_blank" rel="noopener noreferrer"><h2>{job.title}</h2><p>{job.company || 'Компания не указана'} · {job.city || 'Город не указан'}</p><b>{salary(job)}</b></a><button className="remove-liked" type="button" aria-label={`Удалить из понравившихся: ${job.title}`} onClick={() => { setLiked((all) => all.filter((item) => item.id !== job.id)); setSelected((all) => all.filter((id) => id !== job.id)) }}><Icon name="x"/></button></article>)}</div>}</section>}
     {tab === 'history' && <section><header><div><em>Ваши действия</em><h1>История</h1></div></header>{!history.length ? <Empty icon="history" title="История пока пуста" text="Просмотренные вакансии и ваши реакции появятся здесь."/> : <div className="history">{history.map((entry) => <article key={entry.job.id}><a className="history-link" href={entry.job.url} target="_blank" rel="noopener noreferrer"><span className={entry.reaction === 'liked' ? 'reaction liked' : 'reaction skipped'}>{entry.reaction === 'liked' ? 'Нравится' : 'Пропущено'}</span><h2>{entry.job.title}</h2><p>{entry.job.company || 'Компания не указана'} · {entry.job.city || 'Город не указан'}</p><b>{salary(entry.job)}</b></a>{entry.reaction === 'skipped' && <button onClick={() => restoreToLiked(entry)}>В понравившиеся</button>}</article>)}</div>}</section>}

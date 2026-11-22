@@ -64,9 +64,9 @@
   --feed-line: #dbe2e9;
   --feed-green: #117357;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, min(296px, 48%)) auto minmax(0, 1fr);
   width: min(100%, 660px);
-  height: min(100%, 416px);
+  height: 100%;
   margin-inline: auto;
   animation: none;
 }
@@ -101,6 +101,25 @@
   flex-direction: column;
   gap: 10px;
 }
+.card-stack {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  isolation: isolate;
+}
+.card-back {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #cfdadf;
+  border-radius: 13px;
+  background: #f5f8f8;
+  transform: translateY(7px) scaleX(.966);
+  pointer-events: none;
+  transition: transform 280ms ease-out, background-color 280ms ease-out;
+}
+.card-back.advancing { transform: none; background-color: #fff; }
 .feed .card {
   display: flex;
   flex: 1 1 auto;
@@ -171,7 +190,56 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-  padding-top: 12px;
+  padding-top: 16px;
+}
+.vacancy-details {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  max-height: 100%;
+  min-height: 0;
+}
+.vacancy-details button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: #384c60;
+  font-size: 14px;
+  font-weight: 700;
+}
+.vacancy-details button svg { width: 16px; height: 16px; }
+.vacancy-details button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.details-body {
+  min-height: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px;
+  border: 1px solid var(--feed-line);
+  border-radius: 9px;
+  background: white;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.details-body dl, .details-body p { margin: 0; }
+.details-body dl > div + div { margin-top: 12px; }
+.details-body dt { font-weight: 700; }
+.details-body dd { margin: 2px 0 0; white-space: pre-line; }
+.app > aside > button + button:not(.profile-nav) { margin-top: 4px; }
+.app > aside strong i { display: inline-block; line-height: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .app > aside strong i { animation: loading-spin 24s linear infinite; }
+  .card > * { animation: card-content-in 140ms ease-out; }
+}
+@keyframes card-content-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .card-back { transition: none; }
 }
 .decisions button {
   display: flex;
@@ -259,15 +327,17 @@
     font-size: 9px;
     line-height: 1.3;
   }
-  .feed { height: 100%; }
+  .mobile { column-gap: 3px; padding-inline: 3px; }
+  .mobile button { min-width: 0; flex: 1 1 0; }
+  .feed { grid-template-rows: auto minmax(0, min(336px, 50%)) auto minmax(0, 1fr); }
   .feed-header { margin-bottom: 12px; }
   .feed-refresh { width: 44px; padding: 0; }
   .feed-refresh span { display: none; }
-  .feed .card { flex: 0 1 auto; padding: 20px 18px 0; border-radius: 12px; }
+  .feed .card { padding: 20px 18px 0; border-radius: 12px; }
   .card-salary { font-size: 17px; }
   .card-facts { grid-template-columns: 1fr; gap: 12px; margin: 18px 0; padding-top: 14px; }
   .card-facts dd { margin-top: 2px; font-size: 15px; }
   .card-source { margin-inline: -18px; padding-inline: 18px; }
-  .decisions { gap: 8px; padding-top: 8px; }
+  .decisions { gap: 8px; padding-top: 14px; }
   .decisions button { gap: 5px; font-size: 14px; }
 }

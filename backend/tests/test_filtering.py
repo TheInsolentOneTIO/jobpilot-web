@@ -25,6 +25,26 @@ def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", 
 
 
 class ProfileFilteringTests(unittest.TestCase):
+    def test_details_include_nested_source_fields_without_changing_group_identity(self):
+        row = vacancy()
+        row.update(requirement={"experience": 0, "education": "Среднее", "qualification": "Допуск"},
+                   conditions="Вахта", term={"text": "Оплата проезда"})
+        conditions = to_item(row)["work_conditions"]
+        self.assertEqual(conditions["experience_years"], 0)
+        self.assertEqual(conditions["required_education"], "Среднее")
+        self.assertEqual(conditions["qualification"], "Допуск")
+        self.assertEqual(conditions["conditions"], "Вахта")
+        self.assertEqual(conditions["terms"], "Оплата проезда")
+        self.assertEqual(conditions["requirements"], "")
+        self.assertIsNone(conditions["experience"])
+
+    def test_missing_or_malformed_source_details_remain_absent(self):
+        for value in (None, [], {}, {"experience": False, "qualification": "  "}):
+            conditions = to_item({**vacancy(), "requirement": value, "term": []})["work_conditions"]
+            self.assertNotIn("experience_years", conditions)
+            self.assertNotIn("qualification", conditions)
+            self.assertNotIn("terms", conditions)
+
     def test_grouping_data_preserves_single_address_and_conditions(self):
         item = vacancy()
         item['requirements'] = 'Опыт'
