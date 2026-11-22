@@ -185,6 +185,27 @@ class ProfileFilteringTests(unittest.TestCase):
         self.assertTrue(any("host=opendata.trudvsem.ru" in line and "failure=read_timeout" in line for line in logs))
         self.assertFalse(any("private search" in line for line in logs))
 
+    def test_feed_page_passes_source_limit_and_retries_same_offset(self):
+        requests = []
+
+        async def handler(request):
+            requests.append((request.url.params["limit"], request.url.params["offset"]))
+            if len(requests) == 1:
+                raise httpx.ReadTimeout("read timed out", request=request)
+            return httpx.Response(200, json={"results": {"vacancies": [{"vacancy": vacancy()}]}})
+
+        real_client = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+        with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport)):
+            response = TestClient(app).get(
+                "/api/vacancies",
+                params={"page": 2, "per_page": 50, "source_limit": 50, "city": "Москва", "work_format": "any"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(requests, [("50", "2"), ("50", "2")])
+        self.assertEqual([item["id"] for item in response.json()["items"]], ["trudvsem-1"])
+        self.assertEqual(response.json()["source_errors"], [])
+
     def test_temporary_server_error_is_retried_once(self):
         async def run():
             calls = 0

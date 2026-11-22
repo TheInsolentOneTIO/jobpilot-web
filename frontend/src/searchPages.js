@@ -1,32 +1,42 @@
-// Each source page contains at most 100 records; the backend filters before returning them.
-export async function searchPages(apiUrl, params, depth, signal, fetcher = fetch) {
-  const pages = Math.max(1, Math.min(5, Math.ceil(Number(depth || 100) / 100)))
-  const results = await Promise.all(Array.from({length: pages}, async (_, page) => {
+const PAGE_SIZE = 50
+const MAX_DEPTH = 500
+
+export function createSearchProgress() {
+  return {items: [], sourceTotal: 0, matchedTotal: 0, nextPage: 0, done: false}
+}
+
+// Keep the same upstream limit throughout the search: offset is a page number.
+export async function searchPages(apiUrl, params, depth, signal, fetcher = fetch, {
+  progress = createSearchProgress(), onPage = () => {},
+} = {}) {
+  const pages = Math.ceil(Math.min(MAX_DEPTH, Math.max(PAGE_SIZE, Number(depth) || 100)) / PAGE_SIZE)
+  while (!progress.done && progress.nextPage < pages) {
+    signal?.throwIfAborted()
+    const query = new URLSearchParams({
+      ...params, page: String(progress.nextPage), per_page: String(PAGE_SIZE), source_limit: String(PAGE_SIZE),
+    })
+    let data
     try {
-      const query = new URLSearchParams({...params, page: String(page), per_page: '100'})
       const response = await fetcher(`${apiUrl}/api/vacancies?${query}`, {signal})
-      const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Ошибка API: ${response.status}`)
-      return {page, data}
+      if (!response.ok) return {failedPage: progress.nextPage}
+      data = await response.json()
     } catch (error) {
-      if (error.name === 'AbortError') throw error
-      return {page, error: error.message || 'Ошибка сети'}
+      if (signal?.aborted || error.name === 'AbortError') throw error
+      return {failedPage: progress.nextPage}
     }
-  }))
-  const items = [], errors = []
-  let sourceTotal = 0, matchedTotal = 0, successfulPages = 0
-  for (const {page, data, error} of results) {
-    if (error) { errors.push({source: `Страница ${page + 1}`, status: 'ошибка', detail: error}); continue }
-    const sourceErrors = data.source_errors || []
-    if (sourceErrors.length) {
-      errors.push(...sourceErrors.map((item) => ({...item, source: `${item.source} · страница ${page + 1}`})))
-      continue
+    signal?.throwIfAborted()
+    if (data?.source_errors?.length || !Array.isArray(data?.items)) {
+      return {failedPage: progress.nextPage}
     }
-    successfulPages += 1
-    const pageItems = Array.isArray(data.items) ? data.items : []
-    items.push(...pageItems)
-    sourceTotal += data.source_total ?? pageItems.length
-    matchedTotal += data.matched_total ?? pageItems.length
+
+    progress.items.push(...data.items)
+    const sourceCount = data.source_total ?? data.items.length
+    progress.sourceTotal += sourceCount
+    progress.matchedTotal += data.matched_total ?? data.items.length
+    progress.nextPage += 1
+    // Filtered items can be empty even if more source records exist.
+    progress.done = sourceCount < PAGE_SIZE || progress.nextPage === pages
+    onPage(progress)
   }
-  return {items, errors, sourceTotal, matchedTotal, successfulPages}
+  return {failedPage: null}
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RefreshCw } from 'lucide-react'
 import { claimDecision, collapseConsecutive, isViewed, migrateViewed, swipeDecision, uniqueUnseen } from './vacancyIdentity'
-import { searchPages } from './searchPages'
+import { createSearchProgress, searchPages } from './searchPages'
 import { logFeedDecision } from './feedDiagnostic'
 import './styles.css'
 
@@ -21,39 +21,62 @@ function Empty({ icon, title, text }) { return <div className="empty"><div><Icon
 
 function App() {
   const [tab, setTab] = useState('feed'), [profile, setProfile] = useState(() => { const saved = stored(PROFILE_KEY, initialProfile); return {...initialProfile, ...saved, format: saved.format === 'Любой' ? 'any' : saved.format || 'any', advanced: {...advancedDefaults, ...(saved.advanced || {})}} }), [liked, setLiked] = useState(() => stored(LIKED_KEY, [])), [seen, setSeen] = useState(() => stored(SEEN_KEY, [])), [history, setHistory] = useState(() => stored(HISTORY_KEY, [])), [selected, setSelected] = useState([])
-  const [jobs, setJobs] = useState([]), [index, setIndex] = useState(0), [status, setStatus] = useState('idle'), [error, setError] = useState(''), [sourceErrors, setSourceErrors] = useState([]), [stats, setStats] = useState({source: 0, matched: 0, alreadyViewed: 0}), [profileSaved, setProfileSaved] = useState(false)
+  const [jobs, setJobs] = useState([]), [index, setIndex] = useState(0), [status, setStatus] = useState('idle'), [loading, setLoading] = useState(false), [stats, setStats] = useState({source: 0, matched: 0}), [profileSaved, setProfileSaved] = useState(false)
+  const searchRun = useRef(null)
   const pointer = useRef(null); const decisionLocked = useRef(false); const exitTimer = useRef(null); const requestSequence = useRef(0); const requestController = useRef(null); const reloadAfterClear = useRef(false); const profileNoticeTimer = useRef(null)
   const [outgoing, setOutgoing] = useState(null), [motion, setMotion] = useState({x: 0, y: 0, dragging: false, exiting: false})
-  const likedIds = useMemo(() => new Set(liked.map((job) => job.id)), [liked]); const seenRef = useRef(null); if (!seenRef.current) seenRef.current = migrateViewed(seen, history, liked); const likedRef = useRef(liked); likedRef.current = liked; const current = jobs.slice(index).find((job) => !isViewed(seenRef.current, job))
+  const likedIds = useMemo(() => new Set(liked.map((job) => job.id)), [liked]); const seenRef = useRef(null); if (!seenRef.current) seenRef.current = migrateViewed(seen, history, liked); const likedRef = useRef(liked); likedRef.current = liked
+  const current = useMemo(() => jobs.find((job) => !isViewed(seenRef.current, job)), [jobs, seen])
   useEffect(() => localStorage.setItem(LIKED_KEY, JSON.stringify(liked)), [liked]); useEffect(() => localStorage.setItem(SEEN_KEY, JSON.stringify(seen)), [seen]); useEffect(() => localStorage.setItem(HISTORY_KEY, JSON.stringify(history)), [history])
   useEffect(() => () => { clearTimeout(exitTimer.current); clearTimeout(profileNoticeTimer.current) }, [])
   useEffect(() => { if (!outgoing) decisionLocked.current = false }, [index, outgoing])
   useEffect(() => { if (tab !== 'feed' && pointer.current) { pointer.current = null; setMotion({x: 0, y: 0, dragging: false, exiting: false}) } }, [tab])
-  async function load() {
+  function load() {
     if (requestController.current) return
-    const controller = new AbortController(); requestController.current = controller
-    const requestId = ++requestSequence.current
     const searchProfile = {...initialProfile, ...stored(PROFILE_KEY, initialProfile)}
-    setError(''); setSourceErrors([]); setStats({source: 0, matched: 0, alreadyViewed: 0}); setIndex(0)
-    if (!searchProfile.apiEnabled) { setJobs([]); setStatus('disabled'); requestController.current = null; return }
-    setStatus('loading')
+    setStats({source: 0, matched: 0})
+    setIndex(0)
+    setJobs([])
+    if (!searchProfile.apiEnabled) { setStatus('disabled'); return }
     const salaryMin = Number(searchProfile.salary.replace(/\D/g, ''))
     const params = {profession: searchProfile.profession, skills: searchProfile.skills, city: searchProfile.city, work_format: searchProfile.format}
     if (salaryMin) params.salary_min = String(salaryMin)
-    try {
-      const result = await searchPages(API_URL, params, searchProfile.searchDepth, controller.signal)
-      if (requestId !== requestSequence.current) return
-      setSourceErrors(result.errors)
-      if (!result.successfulPages) { setJobs([]); setStatus('source-error'); return }
-      const available = uniqueUnseen(result.items, seenRef.current, likedRef.current)
-      setStats({source: result.sourceTotal, matched: result.matchedTotal, alreadyViewed: result.items.length - available.length})
-      setJobs(collapseConsecutive(available)); setStatus('ready')
-    } catch (e) {
-      if (requestId !== requestSequence.current || e.name === 'AbortError') return
-      setJobs([]); setError(e.message || 'Ошибка сети'); setStatus('error')
-    } finally { if (requestController.current === controller) requestController.current = null }
+    // Keep bundle boundaries stable while decisions are made on pages already shown.
+    searchRun.current = {
+      params, depth: searchProfile.searchDepth, progress: createSearchProgress(),
+      initiallySeen: new Set(seenRef.current), initiallyLiked: likedRef.current,
+    }
+    void resumeSearch()
   }
-  useEffect(() => { if (tab !== 'feed') return; load(); return () => { requestSequence.current += 1; requestController.current?.abort(); requestController.current = null } }, [tab])
+  async function resumeSearch() {
+    const run = searchRun.current
+    if (!run || requestController.current) return
+    const controller = new AbortController()
+    requestController.current = controller
+    const requestId = ++requestSequence.current
+    setStatus('ready')
+    setLoading(true)
+    try {
+      const result = await searchPages(API_URL, run.params, run.depth, controller.signal, fetch, {
+        progress: run.progress,
+        onPage(progress) {
+          if (requestId !== requestSequence.current) return
+          const available = uniqueUnseen(progress.items, run.initiallySeen, run.initiallyLiked)
+          setStats({source: progress.sourceTotal, matched: progress.matchedTotal})
+          setJobs(collapseConsecutive(available))
+        },
+      })
+      if (requestId === requestSequence.current && result.failedPage !== null) setStatus('source-error')
+    } catch {
+      if (!controller.signal.aborted && requestId === requestSequence.current) setStatus('source-error')
+    } finally {
+      if (requestController.current === controller) {
+        requestController.current = null
+        setLoading(false)
+      }
+    }
+  }
+  useEffect(() => { if (tab !== 'feed') return; load(); return () => { requestSequence.current += 1; requestController.current?.abort(); requestController.current = null; setLoading(false) } }, [tab])
   useEffect(() => { if (reloadAfterClear.current) { reloadAfterClear.current = false; if (tab === 'feed') load() } }, [liked, seen, history])
   function decide(like) { if (!current) return; const reaction = like ? 'liked' : 'skipped'; if (like) setLiked((all) => likedIds.has(current.id) ? all : [...all, current]); const viewed = [...seenRef.current]; localStorage.setItem(SEEN_KEY, JSON.stringify(viewed)); setSeen(viewed); setHistory((entries) => [{job: current, reaction, viewedAt: Date.now()}, ...entries.filter((entry) => entry.job.id !== current.id)]); setIndex((i) => i + 1) }
   function restoreToLiked(entry) { setLiked((all) => likedIds.has(entry.job.id) ? all : [...all, entry.job]); setHistory((entries) => entries.map((item) => item.job.id === entry.job.id ? {...item, reaction: 'liked'} : item)) }
@@ -87,7 +110,7 @@ function App() {
   }
   function pointerDown(event) {
     if (decisionLocked.current || !event.isPrimary || event.button !== 0 || event.target.closest('a, button, input, select, textarea, summary, details')) return
-    pointer.current = {id: event.pointerId, x: event.clientX, y: event.clientY, dragging: false}
+    pointer.current = {id: event.pointerId, jobId: current?.id, x: event.clientX, y: event.clientY, dragging: false}
     event.currentTarget.setPointerCapture(event.pointerId)
   }
   function pointerMove(event) {
@@ -107,7 +130,7 @@ function App() {
     pointer.current = null
     const x = event.clientX - start.x, y = event.clientY - start.y
     const decision = swipeDecision(start, event.clientX)
-    if (decision !== null) animateDecision(decision, {x, y})
+    if (decision !== null && start.jobId === current?.id) animateDecision(decision, {x, y})
     else setMotion({x: 0, y: 0, dragging: false, exiting: false})
   }
   function cancelPointer(event) {
@@ -119,7 +142,24 @@ function App() {
   const cardStyle = {transform: `translate3d(${motion.x}px, ${motion.y}px, 0) rotate(${Math.max(-12, Math.min(12, motion.x / 20))}deg)`}
   const nav = [['feed', 'Лента', 'feed'], ['liked', 'Понравившиеся', 'heart'], ['history', 'История', 'history'], ['notifications', 'Уведомления', 'bell']]
   return <div className="app"><aside><strong><i>✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main>
-    {tab === 'feed' && <section className="feed"><header><div><em>Новые возможности</em><h1>Лента вакансий</h1></div><button className="round" onClick={load} disabled={Boolean(outgoing) || status === 'loading'}><RefreshCw/></button></header>{sourceErrors.map((item) => <div className="source-error" key={item.source}>Источник {item.source}: {item.detail} ({item.status})</div>)}{status === 'disabled' && <div className="state"><b>API отключён</b><span>Включите «Работу России» в профиле для загрузки реальных вакансий.</span></div>}{status === 'loading' && <div className="state loading-state" role="status"><span className="loading-star" aria-hidden="true">✦</span><span>Ищем актуальные вакансии…</span></div>}{status === 'source-error' && <Empty icon="x" title="Ошибка источника" text="«Работа России» не вернула вакансии. Повторите попытку позже."/>}{status === 'error' && <div className="state error"><b>Не удалось загрузить вакансии</b><span>{error}</span><button onClick={load}>Попробовать снова</button></div>}{status === 'ready' && displayedJob && <><article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}><div className="cardtop"><b>{displayedJob.source}</b><span>← свайп · свайп →</span></div><h2>{displayedJob.title}</h2><p>{displayedJob.company || 'Компания не указана'}</p><h3>{salary(displayedJob)}</h3><div className="meta">⌖ {displayedJob.city || 'Город не указан'} <span>·</span> {profile.format === 'any' ? 'Любой' : profile.format}</div><a href={displayedJob.url} target="_blank" rel="noreferrer">Открыть источник ↗</a>{(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links"><summary>Похожие объявления</summary>{[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}</details>}</article><div className="decisions"><button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}>← Пропустить</button><button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>Нравится →</button></div></>}{status === 'ready' && !displayedJob && stats.matched === 0 && <Empty icon="feed" title="Нет вакансий по вашим фильтрам" text={`Источник проверил ${stats.source} вакансий. Измените фильтры в профиле и обновите ленту.`}/>} {status === 'ready' && !displayedJob && stats.matched > 0 && <Empty icon="feed" title="Все найденные вакансии просмотрены" text={`Из ${stats.matched} совпадений уже просмотрено: ${stats.alreadyViewed}. Измените фильтры или сбросьте историю просмотра.`}/>}</section>}
+    {tab === 'feed' && <section className="feed">
+      <header>
+        <div><em>Новые возможности</em><h1>Лента вакансий</h1></div>
+        <button className="round" onClick={load} disabled={Boolean(outgoing) || loading} aria-label="Обновить ленту"><RefreshCw/></button>
+      </header>
+      {status === 'disabled' && <div className="state"><b>API отключён</b><span>Включите «Работу России» в профиле для загрузки реальных вакансий.</span></div>}
+      {loading && !displayedJob && <div className="state loading-state" role="status"><span className="loading-star" aria-hidden="true">✦</span><span>Ищем актуальные вакансии…</span></div>}
+      {status === 'source-error' && <div className="source-error feed-load-error">
+        <span role="status">{stats.source > 0 ? 'Часть вакансий не загрузилась.' : 'Не удалось загрузить вакансии.'}</span>
+        <button type="button" onClick={resumeSearch}>Повторить загрузку</button>
+      </div>}
+      {displayedJob && <><article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}><div className="cardtop"><b>{displayedJob.source}</b><span>← свайп · свайп →</span></div><h2>{displayedJob.title}</h2><p>{displayedJob.company || 'Компания не указана'}</p><h3>{salary(displayedJob)}</h3><div className="meta">⌖ {displayedJob.city || 'Город не указан'} <span>·</span> {profile.format === 'any' ? 'Любой' : profile.format}</div><a href={displayedJob.url} target="_blank" rel="noreferrer">Открыть источник ↗</a>{(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links"><summary>Похожие объявления</summary>{[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}</details>}</article><div className="decisions"><button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}>← Пропустить</button><button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>Нравится →</button></div></>}
+      {loading && displayedJob && <p className="feed-loading-more" role="status">Загружаем ещё вакансии…</p>}
+      {!loading && status === 'ready' && !displayedJob && (stats.matched === 0
+        ? <Empty icon="feed" title="Нет вакансий по вашим фильтрам" text={`Источник проверил ${stats.source} вакансий. Измените фильтры в профиле и обновите ленту.`}/>
+        : <Empty icon="feed" title="Все найденные вакансии просмотрены" text="Измените фильтры или сбросьте историю просмотра."/>
+      )}
+    </section>}
     {tab === 'liked' && <section><header><div><em>Ваша подборка</em><h1>Понравившиеся</h1></div></header>{!liked.length ? <Empty icon="heart" title="Здесь появятся ваши находки" text="Ставьте лайк вакансиям в ленте, чтобы вернуться к ним позже."/> : <div className="liked">{liked.map((job) => <article key={job.id}><a className="liked-link" href={job.url} target="_blank" rel="noopener noreferrer"><h2>{job.title}</h2><p>{job.company || 'Компания не указана'} · {job.city || 'Город не указан'}</p><b>{salary(job)}</b></a><button className="remove-liked" type="button" aria-label={`Удалить из понравившихся: ${job.title}`} onClick={() => { setLiked((all) => all.filter((item) => item.id !== job.id)); setSelected((all) => all.filter((id) => id !== job.id)) }}><Icon name="x"/></button></article>)}</div>}</section>}
     {tab === 'history' && <section><header><div><em>Ваши действия</em><h1>История</h1></div></header>{!history.length ? <Empty icon="history" title="История пока пуста" text="Просмотренные вакансии и ваши реакции появятся здесь."/> : <div className="history">{history.map((entry) => <article key={entry.job.id}><a className="history-link" href={entry.job.url} target="_blank" rel="noopener noreferrer"><span className={entry.reaction === 'liked' ? 'reaction liked' : 'reaction skipped'}>{entry.reaction === 'liked' ? 'Нравится' : 'Пропущено'}</span><h2>{entry.job.title}</h2><p>{entry.job.company || 'Компания не указана'} · {entry.job.city || 'Город не указан'}</p><b>{salary(entry.job)}</b></a>{entry.reaction === 'skipped' && <button onClick={() => restoreToLiked(entry)}>В понравившиеся</button>}</article>)}</div>}</section>}
     {tab === 'notifications' && <section><header><div><em>Следите за лентой</em><h1>Уведомления</h1></div></header><Empty icon="bell" title="Уведомлений пока нет" text="Мы пока не отправляем уведомления о новых вакансиях."/></section>}

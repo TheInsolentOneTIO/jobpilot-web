@@ -9,6 +9,9 @@
 .group-links{margin-top:16px;color:#53657c;font-size:13px}
 .group-links summary{cursor:pointer;font-weight:700}
 .group-links a{display:block;margin-top:10px}
+.feed-load-error{display:flex;align-items:center;flex-wrap:wrap;justify-content:space-between;gap:8px}
+.feed-load-error button{border:0;background:none;color:inherit;font-weight:800;text-decoration:underline;padding:8px}
+.feed-loading-more{color:#60728b;font-size:13px;text-align:center}
 .feed .decisions button:first-child{background:#fff0ef;border:1px solid #edc3bf;color:#a9413c}
 .clear-history{margin-top:20px;border:1px solid #f1b7b7;border-radius:11px;padding:11px 16px;background:#fff7f7;color:#b42318;font-weight:800}
 @media(prefers-reduced-motion:reduce){.card{transition:none}}

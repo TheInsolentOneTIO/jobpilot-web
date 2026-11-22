@@ -6,7 +6,7 @@ import secrets
 import socket
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -267,9 +267,17 @@ async def fetch_trudvsem(client: httpx.AsyncClient, text: str, limit: int, offse
 
 
 @app.get("/api/vacancies")
-async def vacancies(profession: str = Query(default="", max_length=150), skills: str = Query(default="", max_length=200), city: str = Query(default="", max_length=100), salary_min: int | None = Query(default=None, ge=0), work_format: str = Query(default="", max_length=30), page: int = Query(default=0, ge=0), per_page: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+async def vacancies(
+    profession: str = Query(default="", max_length=150),
+    skills: str = Query(default="", max_length=200),
+    city: str = Query(default="", max_length=100),
+    salary_min: int | None = Query(default=None, ge=0),
+    work_format: str = Query(default="", max_length=30),
+    page: int = Query(default=0, ge=0),
+    per_page: int = Query(default=20, ge=1, le=100),
+    source_limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> dict[str, Any]:
     text = profession or skills
     async with httpx.AsyncClient(proxy=os.getenv("HTTP_PROXY") or None, timeout=TRUDVSEM_TIMEOUT, follow_redirects=True) as client:
-        source_limit = 100
         items, source_total, error = await fetch_trudvsem(client, text, source_limit, page, profession, city, salary_min, work_format)
     return {"items": items[:per_page], "source_total": source_total, "matched_total": len(items), "source_errors": [error] if error else []}

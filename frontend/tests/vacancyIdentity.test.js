@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { claimDecision, collapseConsecutive, isViewed, migrateViewed, normalizedUrl, swipeDecision, uniqueUnseen } from '../src/vacancyIdentity.js'
-import { searchPages } from '../src/searchPages.js'
+import { createSearchProgress, searchPages } from '../src/searchPages.js'
 
 const job = (id, url, source = 'Работа России') => ({ id, url, source, title: 'Менеджер' })
 
@@ -84,8 +84,9 @@ test('different addresses, conditions or missing details are never grouped', () 
 test('folds a run of twenty visually identical postings across pages without deciding the alternatives', async () => {
   const postings = Array.from({length: 20}, (_, i) => ({...job(`a-${i}`, `https://example.org/a/${i}`), title: 'Водитель электроштабелера', company: 'Ашан', city: null, salary_from: 90000, salary_to: 90000, currency: 'руб.', work_address: `Адрес ${i}`, work_conditions: {duty: `Работа ${i}`}}))
   const next = {...job('next', 'https://example.org/next'), company: 'Другая компания'}
-  const fetcher = async (url) => ({ok: true, json: async () => ({items: new URL(url).searchParams.get('page') === '0' ? postings.slice(0, 10) : [...postings.slice(10), next]})})
-  const fetched = await searchPages('https://api.example', {}, 200, null, fetcher)
+  const fetcher = async (url) => ({ok: true, json: async () => ({source_total: 50, items: new URL(url).searchParams.get('page') === '0' ? postings.slice(0, 10) : [...postings.slice(10), next]})})
+  const fetched = createSearchProgress()
+  await searchPages('https://api.example', {}, 100, null, fetcher, {progress: fetched})
   const seen = new Set(), lock = {current: false}
   const queue = collapseConsecutive(uniqueUnseen(fetched.items, seen, []))
   assert.equal(queue.length, 2)
