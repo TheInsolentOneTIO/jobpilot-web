@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { RefreshCw } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ArrowUpRight, RefreshCw } from 'lucide-react'
 import { claimDecision, collapseConsecutive, isViewed, migrateViewed, swipeDecision, uniqueUnseen } from './vacancyIdentity'
 import { createSearchProgress, searchPages } from './searchPages'
 import { logFeedDecision } from './feedDiagnostic'
@@ -141,24 +141,47 @@ function App() {
   const displayedJob = outgoing || current
   const cardStyle = {transform: `translate3d(${motion.x}px, ${motion.y}px, 0) rotate(${Math.max(-12, Math.min(12, motion.x / 20))}deg)`}
   const nav = [['feed', 'Лента', 'feed'], ['liked', 'Понравившиеся', 'heart'], ['history', 'История', 'history'], ['notifications', 'Уведомления', 'bell']]
-  return <div className="app"><aside><strong><i>✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main>
+  return <div className="app"><aside><strong><i>✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main className={tab === 'feed' ? 'feed-main' : undefined}>
     {tab === 'feed' && <section className="feed">
-      <header>
-        <div><em>Новые возможности</em><h1>Лента вакансий</h1></div>
-        <button className="round" onClick={load} disabled={Boolean(outgoing) || loading} aria-label="Обновить ленту"><RefreshCw/></button>
+      <header className="feed-header">
+        <h1>Лента вакансий</h1>
+        <button className="feed-refresh" onClick={load} disabled={Boolean(outgoing) || loading} aria-label="Обновить ленту"><RefreshCw aria-hidden="true"/><span>Обновить</span></button>
       </header>
-      {status === 'disabled' && <div className="state"><b>API отключён</b><span>Включите «Работу России» в профиле для загрузки реальных вакансий.</span></div>}
-      {loading && !displayedJob && <div className="state loading-state" role="status"><span className="loading-star" aria-hidden="true">✦</span><span>Ищем актуальные вакансии…</span></div>}
-      {status === 'source-error' && <div className="source-error feed-load-error">
-        <span role="status">{stats.source > 0 ? 'Часть вакансий не загрузилась.' : 'Не удалось загрузить вакансии.'}</span>
-        <button type="button" onClick={resumeSearch}>Повторить загрузку</button>
+      <div className="feed-stage">
+        {status === 'disabled' && <div className="state"><b>API отключён</b><span>Включите «Работу России» в профиле для загрузки реальных вакансий.</span></div>}
+        {loading && !displayedJob && <div className="state loading-state" role="status"><span className="loading-star" aria-hidden="true">✦</span><span>Ищем актуальные вакансии…</span></div>}
+        {status === 'source-error' && <div className="source-error feed-load-error">
+          <span role="status">{stats.source > 0 ? 'Часть вакансий не загрузилась.' : 'Не удалось загрузить вакансии.'}</span>
+          <button type="button" onClick={resumeSearch}>Повторить загрузку</button>
+        </div>}
+        {displayedJob && <article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} aria-labelledby="vacancy-title" tabIndex={0}
+          onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}>
+          <h2 id="vacancy-title">{displayedJob.title}</h2>
+          <p className={displayedJob.salary_from || displayedJob.salary_to ? 'card-salary' : 'card-salary unspecified'}>{salary(displayedJob)}</p>
+          <dl className="card-facts">
+            <div><dt>Работодатель</dt><dd>{displayedJob.company || 'Компания не указана'}</dd></div>
+            <div><dt>Город</dt><dd>{displayedJob.city || 'Город не указан'}</dd></div>
+            {profile.format !== 'any' && <div><dt>Формат по фильтру</dt><dd>{profile.format}</dd></div>}
+          </dl>
+          <div className="card-source">
+            <span>Источник</span>
+            <a href={displayedJob.url} target="_blank" rel="noreferrer">{displayedJob.source}<ArrowUpRight aria-hidden="true"/></a>
+          </div>
+          {(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links">
+            <summary>Похожие объявления</summary>
+            {[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}
+          </details>}
+        </article>}
+        {loading && displayedJob && <p className="feed-loading-more" role="status">Загружаем ещё вакансии…</p>}
+        {!loading && status === 'ready' && !displayedJob && (stats.matched === 0
+          ? <Empty icon="feed" title="Нет вакансий по вашим фильтрам" text={`Источник проверил ${stats.source} вакансий. Измените фильтры в профиле и обновите ленту.`}/>
+          : <Empty icon="feed" title="Все найденные вакансии просмотрены" text="Измените фильтры или сбросьте историю просмотра."/>
+        )}
+      </div>
+      {displayedJob && <div className="decisions">
+        <button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}><ArrowLeft aria-hidden="true"/>Пропустить</button>
+        <button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>В понравившиеся<ArrowRight aria-hidden="true"/></button>
       </div>}
-      {displayedJob && <><article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}><div className="cardtop"><b>{displayedJob.source}</b><span>← свайп · свайп →</span></div><h2>{displayedJob.title}</h2><p>{displayedJob.company || 'Компания не указана'}</p><h3>{salary(displayedJob)}</h3><div className="meta">⌖ {displayedJob.city || 'Город не указан'} <span>·</span> {profile.format === 'any' ? 'Любой' : profile.format}</div><a href={displayedJob.url} target="_blank" rel="noreferrer">Открыть источник ↗</a>{(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links"><summary>Похожие объявления</summary>{[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}</details>}</article><div className="decisions"><button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}>← Пропустить</button><button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>Нравится →</button></div></>}
-      {loading && displayedJob && <p className="feed-loading-more" role="status">Загружаем ещё вакансии…</p>}
-      {!loading && status === 'ready' && !displayedJob && (stats.matched === 0
-        ? <Empty icon="feed" title="Нет вакансий по вашим фильтрам" text={`Источник проверил ${stats.source} вакансий. Измените фильтры в профиле и обновите ленту.`}/>
-        : <Empty icon="feed" title="Все найденные вакансии просмотрены" text="Измените фильтры или сбросьте историю просмотра."/>
-      )}
     </section>}
     {tab === 'liked' && <section><header><div><em>Ваша подборка</em><h1>Понравившиеся</h1></div></header>{!liked.length ? <Empty icon="heart" title="Здесь появятся ваши находки" text="Ставьте лайк вакансиям в ленте, чтобы вернуться к ним позже."/> : <div className="liked">{liked.map((job) => <article key={job.id}><a className="liked-link" href={job.url} target="_blank" rel="noopener noreferrer"><h2>{job.title}</h2><p>{job.company || 'Компания не указана'} · {job.city || 'Город не указан'}</p><b>{salary(job)}</b></a><button className="remove-liked" type="button" aria-label={`Удалить из понравившихся: ${job.title}`} onClick={() => { setLiked((all) => all.filter((item) => item.id !== job.id)); setSelected((all) => all.filter((id) => id !== job.id)) }}><Icon name="x"/></button></article>)}</div>}</section>}
     {tab === 'history' && <section><header><div><em>Ваши действия</em><h1>История</h1></div></header>{!history.length ? <Empty icon="history" title="История пока пуста" text="Просмотренные вакансии и ваши реакции появятся здесь."/> : <div className="history">{history.map((entry) => <article key={entry.job.id}><a className="history-link" href={entry.job.url} target="_blank" rel="noopener noreferrer"><span className={entry.reaction === 'liked' ? 'reaction liked' : 'reaction skipped'}>{entry.reaction === 'liked' ? 'Нравится' : 'Пропущено'}</span><h2>{entry.job.title}</h2><p>{entry.job.company || 'Компания не указана'} · {entry.job.city || 'Город не указан'}</p><b>{salary(entry.job)}</b></a>{entry.reaction === 'skipped' && <button onClick={() => restoreToLiked(entry)}>В понравившиеся</button>}</article>)}</div>}</section>}
