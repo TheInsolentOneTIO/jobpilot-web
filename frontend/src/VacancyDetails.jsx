@@ -1,5 +1,6 @@
 import {memo, useEffect, useRef, useState} from 'react'
 import {ArrowUpRight, ChevronDown} from 'lucide-react'
+import {fetchSourceJson} from './sourceRequest.js'
 
 function stripMarkup(value) {
   // Source descriptions may contain HTML. Read only text from an inert fragment.
@@ -69,12 +70,9 @@ export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
     if (!ids) return
     const controller = new AbortController()
     request.current = controller
-    const deadline = window.setTimeout(() => controller.abort('detail-timeout'), 20_000)
     setStatus('loading')
     try {
-      const response = await fetch(`${apiUrl}/api/vacancies/${ids[1]}/${ids[2]}`, {signal: controller.signal})
-      if (!response.ok) throw new Error()
-      const item = await response.json()
+      const item = await fetchSourceJson(`${apiUrl}/api/vacancies/${ids[1]}/${ids[2]}`, controller.signal)
       if (item.id !== job.id) throw new Error()
       if (!controller.signal.aborted) {
         setExtra(item)
@@ -85,9 +83,8 @@ export default memo(function VacancyDetails({job, apiUrl, onLoaded}) {
         })
       }
     } catch {
-      if (!controller.signal.aborted || controller.signal.reason === 'detail-timeout') setStatus('error')
+      if (!controller.signal.aborted) setStatus('error')
     } finally {
-      window.clearTimeout(deadline)
       request.current = null
     }
   }

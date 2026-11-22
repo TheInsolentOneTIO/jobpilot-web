@@ -19,7 +19,8 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 app = FastAPI(title="JobPilot Web API")
 TRUDVSEM_URL = "https://opendata.trudvsem.ru/api/v1/vacancies"
 TRUDVSEM_HOST = urlsplit(TRUDVSEM_URL).hostname or "unknown"
-TRUDVSEM_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+TRUDVSEM_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
+SOURCE_DEADLINE_SECONDS = 35
 RETRYABLE_SOURCE_STATUSES = {408, 500, 502, 503, 504}
 MAX_SOURCE_ATTEMPTS = 2
 diagnostic_lock = asyncio.Lock()
@@ -257,33 +258,45 @@ def filter_vacancies(records: list[Any], profession: str, city: str, salary_min:
     return items
 
 
-async def fetch_trudvsem(client: httpx.AsyncClient, text: str, limit: int, offset: int, profession: str, city: str, salary_min: int | None, work_format: str) -> tuple[list[dict[str, Any]], int, dict[str, str | int] | None]:
-    for attempt in range(1, MAX_SOURCE_ATTEMPTS + 1):
-        started_at = time.perf_counter()
-        try:
-            response = await client.get(TRUDVSEM_URL, params={"text": text, "limit": limit, "offset": offset})
-        except httpx.RequestError as error:
-            duration_ms = round((time.perf_counter() - started_at) * 1000)
-            failure = request_failure_kind(error)
-            log_source_result("transport_error", attempt=attempt, duration_ms=duration_ms, failure=failure)
-            if attempt < MAX_SOURCE_ATTEMPTS:
+async def get_source_response(client: httpx.AsyncClient, url: str, *, params: dict[str, str | int] | None = None, retry: bool = False) -> httpx.Response:
+    started = time.perf_counter()
+    attempts = MAX_SOURCE_ATTEMPTS if retry else 1
+    attempt = 1
+    try:
+        # A read timeout bounds an idle read. This deadline also bounds redirects,
+        # slow streaming bodies, backoff and all attempts combined.
+        async with asyncio.timeout(SOURCE_DEADLINE_SECONDS):
+            while True:
+                attempt_started = time.perf_counter()
+                try:
+                    response = await client.get(url, params=params)
+                except httpx.RequestError as error:
+                    elapsed = round((time.perf_counter() - attempt_started) * 1000)
+                    log_source_result("transport_error", attempt=attempt, duration_ms=elapsed, failure=request_failure_kind(error))
+                    if attempt == attempts or not isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+                        raise
+                else:
+                    elapsed = round((time.perf_counter() - attempt_started) * 1000)
+                    log_source_result("response", attempt=attempt, duration_ms=elapsed, status=response.status_code)
+                    if attempt == attempts or response.status_code not in RETRYABLE_SOURCE_STATUSES:
+                        return response
                 await asyncio.sleep(0.2)
-                continue
-            status = 504 if isinstance(error, httpx.TimeoutException) else 502
-            detail = "Work Russia API request timed out" if status == 504 else "Work Russia API is unavailable"
-            return [], 0, source_error("Работа России", status, detail)
+                attempt += 1
+    except TimeoutError:
+        elapsed = round((time.perf_counter() - started) * 1000)
+        log_source_result("transport_error", attempt=attempt, duration_ms=elapsed, failure="total_timeout")
+        raise
 
-        duration_ms = round((time.perf_counter() - started_at) * 1000)
-        log_source_result("response", attempt=attempt, duration_ms=duration_ms, status=response.status_code)
-        if response.status_code in RETRYABLE_SOURCE_STATUSES and attempt < MAX_SOURCE_ATTEMPTS:
-            await asyncio.sleep(0.2)
-            continue
-        if response.is_error:
-            return [], 0, source_error("Работа России", response.status_code, f"Work Russia API returned {response.status_code}")
-        break
-    else:  # Defensive guard: the loop always returns or breaks above.
+
+async def fetch_trudvsem(client: httpx.AsyncClient, text: str, limit: int, offset: int, profession: str, city: str, salary_min: int | None, work_format: str) -> tuple[list[dict[str, Any]], int, dict[str, str | int] | None]:
+    try:
+        response = await get_source_response(client, TRUDVSEM_URL, params={"text": text, "limit": limit, "offset": offset}, retry=True)
+    except (TimeoutError, httpx.TimeoutException):
+        return [], 0, source_error("Работа России", 504, "Work Russia API request timed out")
+    except httpx.RequestError:
         return [], 0, source_error("Работа России", 502, "Work Russia API is unavailable")
-
+    if response.is_error:
+        return [], 0, source_error("Работа России", response.status_code, f"Work Russia API returned {response.status_code}")
     try:
         records = response.json().get("results", {}).get("vacancies", [])
     except ValueError:
@@ -303,10 +316,10 @@ SourceId = Annotated[str, ApiPath(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 async def vacancy_details(company_code: SourceId, vacancy_id: SourceId) -> dict[str, Any]:
     async with source_client() as client:
         try:
-            response = await client.get(f"{TRUDVSEM_URL}/vacancy/{company_code}/{vacancy_id}")
+            response = await get_source_response(client, f"{TRUDVSEM_URL}/vacancy/{company_code}/{vacancy_id}")
             response.raise_for_status()
             rows = response.json()["results"]["vacancies"]
-        except httpx.TimeoutException:
+        except (TimeoutError, httpx.TimeoutException):
             raise HTTPException(504, "Work Russia API request timed out")
         except httpx.HTTPStatusError as error:
             status = error.response.status_code

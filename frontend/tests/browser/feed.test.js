@@ -182,10 +182,42 @@ test('a stalled detail request with no list fields leaves the original link and 
   const requested = page.waitForRequest('**/api/vacancies/123/3')
   await toggle.click()
   await requested
-  await page.clock.fastForward(20_001)
+  await page.clock.fastForward(30_001)
+  await page.getByRole('status').filter({hasText: 'Загружаем'}).waitFor()
+  await page.clock.fastForward(10_000)
   const details = page.getByRole('region', {name: 'Подробности вакансии'})
   await details.getByRole('status').filter({hasText: 'Не удалось'}).waitFor()
   assert.equal(await details.locator('p').count(), 1)
   assert.equal(await details.locator('dl').count(), 0)
   assert.equal(await details.getByRole('link').getAttribute('href'), brief.url)
+})
+
+test('a stalled second page preserves the next card and resumes only on manual retry', async t => {
+  const context = await browser.newContext({reducedMotion: 'reduce'})
+  t.after(() => context.close())
+  const page = await context.newPage()
+  await page.clock.install()
+  const pages = []
+  await page.route('**/api/vacancies?**', route => {
+    const index = Number(new URL(route.request().url()).searchParams.get('page'))
+    pages.push(index)
+    if (index === 0) return route.fulfill({json: {items: [first, second], source_total: 50}})
+    if (pages.length === 2) return // Keep page 1 pending until the client deadline.
+    return route.fulfill({json: {items: [first, third], source_total: 2}})
+  })
+  const pending = page.waitForRequest(req => new URL(req.url()).searchParams.get('page') === '1')
+  await page.goto(origin, {waitUntil: 'domcontentloaded'})
+  await pending
+  const skip = page.getByRole('button', {name: 'Пропустить', exact: true})
+  await skip.click()
+  await page.getByRole('heading', {name: second.title}).waitFor()
+  await page.clock.fastForward(40_001)
+  await page.getByText('Часть вакансий не загрузилась.').waitFor()
+  assert.equal(await page.locator('.card h2').textContent(), second.title)
+  assert.deepEqual(pages, [0, 1])
+  await page.getByRole('button', {name: 'Повторить загрузку'}).click()
+  await page.getByText('Загружаем ещё вакансии…').waitFor({state: 'hidden'})
+  await skip.click()
+  await page.getByRole('heading', {name: third.title}).waitFor()
+  assert.deepEqual(pages, [0, 1, 1])
 })

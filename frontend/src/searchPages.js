@@ -1,3 +1,5 @@
+import {fetchSourceJson} from './sourceRequest.js'
+
 const PAGE_SIZE = 50
 const MAX_DEPTH = 500
 
@@ -17,9 +19,7 @@ export async function searchPages(apiUrl, params, depth, signal, fetcher = fetch
     })
     let data
     try {
-      const response = await fetcher(`${apiUrl}/api/vacancies?${query}`, {signal})
-      if (!response.ok) return {failedPage: progress.nextPage}
-      data = await response.json()
+      data = await fetchSourceJson(`${apiUrl}/api/vacancies?${query}`, signal, fetcher)
     } catch (error) {
       if (signal?.aborted || error.name === 'AbortError') throw error
       return {failedPage: progress.nextPage}

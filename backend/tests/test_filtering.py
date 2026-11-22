@@ -241,7 +241,7 @@ class ProfileFilteringTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertIsNone(error)
 
-    def test_read_timeout_is_retried_once_and_logged_without_query_data(self):
+    def test_read_timeout_is_not_retried_and_is_logged_without_query_data(self):
         async def run():
             calls = 0
 
@@ -256,7 +256,7 @@ class ProfileFilteringTests(unittest.TestCase):
             return calls, result, logs.output
 
         calls, (_, _, error), logs = asyncio.run(run())
-        self.assertEqual(calls, 2)
+        self.assertEqual(calls, 1)
         self.assertEqual(error["status"], 504)
         self.assertTrue(any("host=opendata.trudvsem.ru" in line and "failure=read_timeout" in line for line in logs))
         self.assertFalse(any("private search" in line for line in logs))
@@ -265,14 +265,15 @@ class ProfileFilteringTests(unittest.TestCase):
         requests = []
 
         async def handler(request):
+            self.assertEqual(request.extensions["timeout"], {"connect": 5, "read": 30, "write": 5, "pool": 5})
             requests.append((request.url.params["limit"], request.url.params["offset"]))
             if len(requests) == 1:
-                raise httpx.ReadTimeout("read timed out", request=request)
+                raise httpx.ConnectError("connection interrupted", request=request)
             return httpx.Response(200, json={"results": {"vacancies": [{"vacancy": vacancy()}]}})
 
         real_client = httpx.AsyncClient
         transport = httpx.MockTransport(handler)
-        with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport)):
+        with patch("app.main.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport, timeout=kwargs["timeout"])), self.assertLogs("uvicorn.error", level="INFO") as logs:
             response = TestClient(app).get(
                 "/api/vacancies",
                 params={"page": 2, "per_page": 50, "source_limit": 50, "city": "Москва", "work_format": "any"},
@@ -281,6 +282,21 @@ class ProfileFilteringTests(unittest.TestCase):
         self.assertEqual(requests, [("50", "2"), ("50", "2")])
         self.assertEqual([item["id"] for item in response.json()["items"]], ["trudvsem-1"])
         self.assertEqual(response.json()["source_errors"], [])
+        self.assertRegex(logs.output[-1], r"attempt=2 duration_ms=\d+ http_status=200")
+
+    def test_total_deadline_includes_retry_backoff(self):
+        calls = []
+        async def handler(request):
+            calls.append(request.url)
+            return httpx.Response(503)
+        async def run():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await fetch_trudvsem(client, "", 50, 0, "", "", None, "any")
+        with patch("app.main.SOURCE_DEADLINE_SECONDS", 0.03), self.assertLogs("uvicorn.error", level="INFO") as logs:
+            items, total, error = asyncio.run(run())
+        self.assertEqual((items, total, error["status"]), ([], 0, 504))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("failure=total_timeout", logs.output[-1])
 
     def test_temporary_server_error_is_retried_once(self):
         async def run():
