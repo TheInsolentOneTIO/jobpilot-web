@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import socket
 import time
 from pathlib import Path
@@ -10,8 +11,9 @@ from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from .network_diagnostic import run_diagnostic
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 app = FastAPI(title="JobPilot Web API")
@@ -20,6 +22,8 @@ TRUDVSEM_HOST = urlsplit(TRUDVSEM_URL).hostname or "unknown"
 TRUDVSEM_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 RETRYABLE_SOURCE_STATUSES = {408, 500, 502, 503, 504}
 MAX_SOURCE_ATTEMPTS = 2
+diagnostic_lock = asyncio.Lock()
+diagnostic_last_started = 0.0
 logger = logging.getLogger("uvicorn.error")
 LOCAL_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 PROFESSION_VARIANTS = {
@@ -53,6 +57,23 @@ app.add_middleware(
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/internal/source-diagnostic", include_in_schema=False)
+async def source_diagnostic(response: Response, x_diagnostic_secret: str = Header(default="")) -> dict[str, Any]:
+    global diagnostic_last_started
+    configured_secret = os.getenv("SOURCE_DIAGNOSTIC_SECRET", "")
+    if not configured_secret or not secrets.compare_digest(x_diagnostic_secret.encode("utf-8"), configured_secret.encode("utf-8")):
+        raise HTTPException(status_code=404, detail="Not found")
+    if diagnostic_lock.locked():
+        raise HTTPException(status_code=429, detail="Diagnostic already running")
+    async with diagnostic_lock:
+        now = time.monotonic()
+        if diagnostic_last_started and now - diagnostic_last_started < 300:
+            raise HTTPException(status_code=429, detail="Try again later")
+        diagnostic_last_started = now
+        response.headers["Cache-Control"] = "no-store"
+        return await run_diagnostic()
 
 
 def source_error(source: str, status: int, detail: str) -> dict[str, str | int]:
