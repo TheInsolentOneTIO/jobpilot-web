@@ -39,3 +39,21 @@ test('mobile swipes and repeated taps commit only once', () => {
   assert.equal(claimDecision(lock, seen, job('2', 'https://example.org/a/')), false)
   assert.equal(claimDecision(lock, seen, job('3', 'https://example.org/b')), true)
 })
+
+test('twenty repeated records across and within pages do not recur after swiping', () => {
+  const repeated = job('same', 'https://example.org/vacancy/1')
+  const page0 = Array.from({length: 10}, () => ({...repeated}))
+  const page1 = [...Array.from({length: 10}, (_, i) => job(`duplicate-${i}`, 'https://example.org/vacancy/1?utm_source=feed')), job('next', 'https://example.org/vacancy/2')]
+  const seen = new Set(), lock = {current: false}
+  const queue = uniqueUnseen([...page0, ...page1], seen, [])
+  assert.deepEqual(queue.map((item) => item.id), ['same', 'next'])
+  assert.equal(claimDecision(lock, seen, queue[0]), true)
+  assert.equal(queue.slice(1).find((item) => !isViewed(seen, item)).id, 'next')
+  const reloaded = new Set(JSON.parse(JSON.stringify([...seen])))
+  assert.deepEqual(uniqueUnseen([...page0, ...page1], reloaded, []).map((item) => item.id), ['next'])
+})
+
+test('visually identical records with different IDs and URLs remain separate', () => {
+  const items = Array.from({length: 20}, (_, i) => job(`id-${i}`, `https://example.org/vacancy/${i}`))
+  assert.equal(uniqueUnseen(items, new Set(), []).length, 20)
+})

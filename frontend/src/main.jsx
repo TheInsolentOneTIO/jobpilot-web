@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { RefreshCw } from 'lucide-react'
 import { claimDecision, isViewed, migrateViewed, swipeDecision, uniqueUnseen } from './vacancyIdentity'
 import { searchPages } from './searchPages'
+import { logFeedDecision } from './feedDiagnostic'
 import './styles.css'
 
 const API_URL = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
@@ -69,6 +70,7 @@ function App() {
   }
   function animateDecision(like, from = motion) {
     if (!claimDecision(decisionLocked, seenRef.current, current)) return
+    void logFeedDecision(current, index)
     pointer.current = null
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       decide(like)
