@@ -6,6 +6,9 @@
 .card{position:relative;transition:transform 300ms cubic-bezier(.22,.75,.3,1);will-change:transform}
 .card.dragging{transition:none;cursor:grabbing}
 .card.exiting{pointer-events:none}
+.group-links{margin-top:16px;color:#53657c;font-size:13px}
+.group-links summary{cursor:pointer;font-weight:700}
+.group-links a{display:block;margin-top:10px}
 .feed .decisions button:first-child{background:#fff0ef;border:1px solid #edc3bf;color:#a9413c}
 .clear-history{margin-top:20px;border:1px solid #f1b7b7;border-radius:11px;padding:11px 16px;background:#fff7f7;color:#b42318;font-weight:800}
 @media(prefers-reduced-motion:reduce){.card{transition:none}}

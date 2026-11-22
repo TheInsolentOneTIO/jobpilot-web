@@ -57,3 +57,25 @@ test('visually identical records with different IDs and URLs remain separate', (
   const items = Array.from({length: 20}, (_, i) => job(`id-${i}`, `https://example.org/vacancy/${i}`))
   assert.equal(uniqueUnseen(items, new Set(), []).length, 20)
 })
+
+test('groups twenty equivalent postings across pages and persists the group decision', () => {
+  const common = {company: 'Ашан', title: 'Водитель электроштабелера', city: 'Москва', work_address: 'г Москва, ул Лесная, д 12', salary_from: 90000, salary_to: 100000, currency: 'RUB', work_conditions: {duty: 'Погрузка', requirements: 'Опыт', schedule: 'Сменный'}}
+  const items = Array.from({length: 20}, (_, i) => ({...job(`id-${i}`, `https://example.org/vacancy/${i}`), ...common}))
+  const seen = new Set(), lock = {current: false}
+  const queue = uniqueUnseen([...items.slice(0, 10), ...items.slice(10)], seen, [])
+  assert.equal(queue.length, 1)
+  assert.equal(queue[0].members.length, 20)
+  assert.equal(swipeDecision({x: 100, dragging: true}, 20), false)
+  assert.equal(claimDecision(lock, seen, queue[0]), true)
+  const stored = new Set(JSON.parse(JSON.stringify([...seen])))
+  assert.equal(uniqueUnseen([...items, {...items[0], id: 'new', url: 'https://example.org/vacancy/new'}], stored, []).length, 0)
+  assert.equal(uniqueUnseen(items, new Set(), JSON.parse(JSON.stringify(queue))).length, 0)
+})
+
+test('different addresses, conditions or missing details are never grouped', () => {
+  const common = {...job('1', 'https://example.org/1'), company: 'Ашан', city: 'Москва', work_address: 'Москва, ул Лесная, 12', salary_from: 90000, salary_to: 100000, currency: 'RUB', work_conditions: {duty: 'Погрузка', requirements: 'Опыт', schedule: 'Сменный'}}
+  const otherAddress = {...common, id: '2', url: 'https://example.org/2', work_address: 'Москва, ул Лесная, 14'}
+  const otherSchedule = {...common, id: '3', url: 'https://example.org/3', work_conditions: {...common.work_conditions, schedule: 'Ночной'}}
+  const unknown = {...common, id: '4', url: 'https://example.org/4', work_address: null}
+  assert.equal(uniqueUnseen([common, otherAddress, otherSchedule, unknown], new Set(), []).length, 4)
+})

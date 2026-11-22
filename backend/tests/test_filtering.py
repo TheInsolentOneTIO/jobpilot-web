@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import httpx
 
-from app.main import app, city_matches, cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, normalize, request_failure_kind, vacancies
+from app.main import app, city_matches, cors_origins, fetch_trudvsem, filter_vacancies, matches_profile, normalize, request_failure_kind, to_item, vacancies
 from fastapi.testclient import TestClient
 
 
@@ -25,6 +25,15 @@ def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", 
 
 
 class ProfileFilteringTests(unittest.TestCase):
+    def test_grouping_data_preserves_single_address_and_conditions(self):
+        item = vacancy()
+        item['requirements'] = 'Опыт'
+        result = to_item(item)
+        self.assertEqual(result['work_address'], 'г Москва, улица Тестовая, 1')
+        self.assertEqual(result['work_conditions']['requirements'], 'Опыт')
+        item['addresses']['address'].append({'location': 'г Москва, улица Другая, 2'})
+        self.assertIsNone(to_item(item)['work_address'])
+
     def test_cors_includes_configured_public_origin_and_keeps_local_origins(self):
         with patch.dict(os.environ, {"CORS_ORIGINS": "https://jobpilot.example.com/, https://staging.example.com"}, clear=False):
             origins = cors_origins()

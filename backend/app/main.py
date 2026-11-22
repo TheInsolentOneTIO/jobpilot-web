@@ -212,7 +212,12 @@ def matches_profile(vacancy: dict[str, Any], profession: str, city: str, salary_
 
 def to_item(vacancy: dict[str, Any]) -> dict[str, Any]:
     cities = address_cities(vacancy)
-    return {"id": f"trudvsem-{vacancy['id']}", "title": vacancy.get("job-name") or "Без названия", "company": (vacancy.get("company") or {}).get("name"), "salary_from": vacancy.get("salary_min"), "salary_to": vacancy.get("salary_max"), "currency": vacancy.get("currency"), "city": cities[0].title() if cities and len(set(cities)) == 1 else None, "url": vacancy.get("vac_url"), "source": "Работа России"}
+    addresses = vacancy.get("addresses")
+    entries = addresses.get("address") if isinstance(addresses, dict) else None
+    if isinstance(entries, dict):
+        entries = [entries]
+    work_address = entries[0].get("location") if isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], dict) and isinstance(entries[0].get("location"), str) else None
+    return {"id": f"trudvsem-{vacancy['id']}", "title": vacancy.get("job-name") or "Без названия", "company": (vacancy.get("company") or {}).get("name"), "salary_from": vacancy.get("salary_min"), "salary_to": vacancy.get("salary_max"), "currency": vacancy.get("currency"), "city": cities[0].title() if cities and len(set(cities)) == 1 else None, "work_address": work_address, "work_conditions": {key: vacancy.get(key) for key in ("duty", "requirements", "schedule", "employment", "experience", "education")}, "url": vacancy.get("vac_url"), "source": "Работа России"}
 
 
 def filter_vacancies(records: list[Any], profession: str, city: str, salary_min: int | None, work_format: str) -> list[dict[str, Any]]:

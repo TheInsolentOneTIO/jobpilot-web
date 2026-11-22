@@ -19,7 +19,28 @@ export function vacancyKeys(job) {
   if (job.id != null && String(job.id)) keys.push(`id:${source}:${String(job.id)}`)
   const url = normalizedUrl(job.url)
   if (url) keys.push(`url:${url}`)
+  const group = groupKey(job)
+  if (group) keys.push(group)
+  for (const member of job.members || []) {
+    if (member.id != null && String(member.id)) keys.push(`id:${String(member.source || '').trim().toLowerCase()}:${String(member.id)}`)
+    const memberUrl = normalizedUrl(member.url)
+    if (memberUrl) keys.push(`url:${memberUrl}`)
+  }
   return keys
+}
+
+function groupKey(job) {
+  const clean = (value) => typeof value === 'string' ? value.normalize('NFKC').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim() : ''
+  const conditions = job.work_conditions
+  if (!conditions || typeof conditions !== 'object') return null
+  const values = [job.company, job.title, job.city, job.work_address, job.currency].map(clean)
+  if (values.some((value) => !value) || !/\d/.test(values[3])) return null
+  if (!(Number(job.salary_from) > 0 || Number(job.salary_to) > 0)) return null
+  const fields = ['duty', 'requirements', 'schedule', 'employment', 'experience', 'education']
+  if (!fields.every((field) => conditions[field] == null || typeof conditions[field] === 'string')) return null
+  const details = fields.map((field) => clean(conditions[field]))
+  if (!details[0] || !details[1] || !details[2]) return null
+  return `group:${JSON.stringify([...values, job.salary_from || null, job.salary_to || null, ...details])}`
 }
 
 export function isViewed(seen, job) {
@@ -41,13 +62,25 @@ export function migrateViewed(seen, history, liked) {
 export function uniqueUnseen(jobs, seen, liked) {
   const known = new Set(seen)
   liked.forEach((job) => markViewed(known, job))
-  const result = []
+  const groups = [], groupMap = new Map(), identityMap = new Map()
   for (const job of jobs) {
-    const duplicate = isViewed(known, job)
-    markViewed(known, job)
-    if (!duplicate) result.push(job)
+    const identity = vacancyKeys(job).filter((key) => !key.startsWith('group:'))
+    const key = groupKey(job)
+    const index = identity.map((item) => identityMap.get(item)).find((value) => value !== undefined) ?? (key ? groupMap.get(key) : undefined)
+    const member = {id: job.id, source: job.source, url: job.url}
+    if (index === undefined) {
+      const next = groups.length
+      groups.push({...job, members: [member]})
+      if (key) groupMap.set(key, next)
+      identity.forEach((item) => identityMap.set(item, next))
+    } else {
+      const group = groups[index]
+      if (!group.members.some((item) => item.id === member.id && item.source === member.source && item.url === member.url)) group.members.push(member)
+      identity.forEach((item) => identityMap.set(item, index))
+      if (key) groupMap.set(key, index)
+    }
   }
-  return result
+  return groups.filter((group) => !isViewed(known, group))
 }
 
 export function claimDecision(lock, seen, job) {
