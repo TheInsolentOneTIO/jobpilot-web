@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Path as ApiPath, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from .network_diagnostic import run_diagnostic
 
@@ -217,6 +217,10 @@ def to_item(vacancy: dict[str, Any]) -> dict[str, Any]:
     if isinstance(entries, dict):
         entries = [entries]
     work_address = entries[0].get("location") if isinstance(entries, list) and len(entries) == 1 and isinstance(entries[0], dict) and isinstance(entries[0].get("location"), str) else None
+    work_addresses = list(dict.fromkeys(
+        entry["location"].strip() for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict) and isinstance(entry.get("location"), str) and entry["location"].strip()
+    ))
     # Keep the original six fields intact: saved group identities depend on them.
     conditions = {key: vacancy.get(key) for key in ("duty", "requirements", "schedule", "employment", "experience", "education")}
     requirement = vacancy.get("requirement")
@@ -227,6 +231,7 @@ def to_item(vacancy: dict[str, Any]) -> dict[str, Any]:
         "required_education": requirement.get("education"),
         "experience_years": requirement.get("experience"),
         "conditions": vacancy.get("conditions"),
+        "description": vacancy.get("description"),
         "terms": term.get("text") if isinstance(term, dict) else None,
     }.items():
         if (isinstance(value, str) and value.strip()) or (key == "experience_years" and type(value) is int and value >= 0):
@@ -236,6 +241,7 @@ def to_item(vacancy: dict[str, Any]) -> dict[str, Any]:
         "company": (vacancy.get("company") or {}).get("name"),
         "salary_from": vacancy.get("salary_min"), "salary_to": vacancy.get("salary_max"), "currency": vacancy.get("currency"),
         "city": cities[0].title() if cities and len(set(cities)) == 1 else None, "work_address": work_address,
+        "work_addresses": work_addresses,
         "work_conditions": conditions, "url": vacancy.get("vac_url"), "source": "Работа России",
     }
 
@@ -286,6 +292,33 @@ async def fetch_trudvsem(client: httpx.AsyncClient, text: str, limit: int, offse
     return filter_vacancies(records, profession, city, salary_min, work_format), len(records), None
 
 
+def source_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(proxy=os.getenv("HTTP_PROXY") or None, timeout=TRUDVSEM_TIMEOUT, follow_redirects=True)
+
+
+SourceId = Annotated[str, ApiPath(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
+
+
+@app.get("/api/vacancies/{company_code}/{vacancy_id}")
+async def vacancy_details(company_code: SourceId, vacancy_id: SourceId) -> dict[str, Any]:
+    async with source_client() as client:
+        try:
+            response = await client.get(f"{TRUDVSEM_URL}/vacancy/{company_code}/{vacancy_id}")
+            response.raise_for_status()
+            rows = response.json()["results"]["vacancies"]
+        except httpx.TimeoutException:
+            raise HTTPException(504, "Work Russia API request timed out")
+        except httpx.HTTPStatusError as error:
+            raise HTTPException(404 if error.response.status_code == 404 else 502, "Vacancy unavailable")
+        except (httpx.RequestError, KeyError, ValueError, TypeError):
+            raise HTTPException(502, "Work Russia API is unavailable")
+    for row in rows if isinstance(rows, list) else []:
+        vacancy = row.get("vacancy") if isinstance(row, dict) else None
+        if isinstance(vacancy, dict) and vacancy.get("id") == vacancy_id:
+            return to_item(vacancy)
+    raise HTTPException(404, "Vacancy not found")
+
+
 @app.get("/api/vacancies")
 async def vacancies(
     profession: str = Query(default="", max_length=150),
@@ -298,6 +331,6 @@ async def vacancies(
     source_limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> dict[str, Any]:
     text = profession or skills
-    async with httpx.AsyncClient(proxy=os.getenv("HTTP_PROXY") or None, timeout=TRUDVSEM_TIMEOUT, follow_redirects=True) as client:
+    async with source_client() as client:
         items, source_total, error = await fetch_trudvsem(client, text, source_limit, page, profession, city, salary_min, work_format)
     return {"items": items[:per_page], "source_total": source_total, "matched_total": len(items), "source_errors": [error] if error else []}

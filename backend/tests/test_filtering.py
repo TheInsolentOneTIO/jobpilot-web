@@ -25,6 +25,29 @@ def vacancy(*, vacancy_id="1", title="Python developer", region="Москва", 
 
 
 class ProfileFilteringTests(unittest.TestCase):
+    def test_full_vacancy_by_id_returns_duties_and_all_workplaces(self):
+        item = vacancy(duty="<ul><li>Вести закупки</li></ul>")
+        item["addresses"]["address"].append({"location": "г Москва, улица Другая, 2"})
+        def handler(request):
+            self.assertEqual(str(request.url), "https://opendata.trudvsem.ru/api/v1/vacancies/vacancy/123/1")
+            return httpx.Response(200, json={"results": {"vacancies": [
+                {"vacancy": vacancy(vacancy_id="unrelated")}, {"vacancy": item},
+            ]}})
+        with patch("app.main.source_client", return_value=httpx.AsyncClient(transport=httpx.MockTransport(handler))):
+            response = TestClient(app).get("/api/vacancies/123/1")
+        self.assertEqual(response.status_code, 200)
+        details = response.json()
+        self.assertEqual(details["work_conditions"]["duty"], item["duty"])
+        self.assertIsNone(details["work_address"])
+        self.assertEqual(details["work_addresses"], [a["location"] for a in item["addresses"]["address"]])
+
+    def test_full_vacancy_timeout_and_missing_record(self):
+        def timeout(request):
+            raise httpx.ReadTimeout("timed out")
+        for handler, status in [(timeout, 504), (lambda _: httpx.Response(200, json={"results": {"vacancies": []}}), 404)]:
+            with patch("app.main.source_client", return_value=httpx.AsyncClient(transport=httpx.MockTransport(handler))):
+                self.assertEqual(TestClient(app).get("/api/vacancies/123/1").status_code, status)
+
     def test_details_include_nested_source_fields_without_changing_group_identity(self):
         row = vacancy()
         row.update(requirement={"experience": 0, "education": "Среднее", "qualification": "Допуск"},

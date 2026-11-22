@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ArrowLeft, ArrowRight, ArrowUpRight, RefreshCw } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react'
 import { claimDecision, collapseConsecutive, isViewed, migrateViewed, swipeDecision, uniqueUnseen } from './vacancyIdentity'
 import { createSearchProgress, searchPages } from './searchPages'
 import { logFeedDecision } from './feedDiagnostic'
@@ -25,31 +25,43 @@ function salary({salary_from, salary_to, currency}) {
   else if (from > 0) text = `от ${amount(from)}`
   else if (to > 0) text = `до ${amount(to)}`
   else return 'Зарплата не указана'
-  return [text, currency].filter(Boolean).join(' ')
+  const unit = /^(руб\.?|rub|rur)$/i.test(currency?.trim()) ? '₽' : currency
+  return [text, unit].filter(Boolean).join(' ')
 }
 function Empty({ icon, title, text }) { return <div className="empty"><div><Icon name={icon}/></div><h2>{title}</h2><p>{text}</p></div> }
+
+function historyTags(conditions) {
+  return [...new Set([conditions?.schedule, conditions?.employment]
+    .filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean))]
+}
 
 function App() {
   const [tab, setTab] = useState('feed'), [profile, setProfile] = useState(() => { const saved = stored(PROFILE_KEY, initialProfile); return {...initialProfile, ...saved, format: saved.format === 'Любой' ? 'any' : saved.format || 'any', advanced: {...advancedDefaults, ...(saved.advanced || {})}} }), [liked, setLiked] = useState(() => stored(LIKED_KEY, [])), [seen, setSeen] = useState(() => stored(SEEN_KEY, [])), [history, setHistory] = useState(() => stored(HISTORY_KEY, [])), [selected, setSelected] = useState([])
   const [jobs, setJobs] = useState([]), [index, setIndex] = useState(0), [status, setStatus] = useState('idle'), [loading, setLoading] = useState(false), [stats, setStats] = useState({source: 0, matched: 0}), [profileSaved, setProfileSaved] = useState(false)
   const searchRun = useRef(null)
+  const loadedTags = useRef(null)
+  const rememberDetails = useCallback((id, conditions) => {
+    loadedTags.current = {id, tags: historyTags(conditions)}
+  }, [])
   const pointer = useRef(null); const decisionLocked = useRef(false); const exitTimer = useRef(null); const requestSequence = useRef(0); const requestController = useRef(null); const reloadAfterClear = useRef(false); const profileNoticeTimer = useRef(null)
   const [outgoing, setOutgoing] = useState(null), [motion, setMotion] = useState({x: 0, y: 0, dragging: false, exiting: false})
   const likedIds = useMemo(() => new Set(liked.map((job) => job.id)), [liked]); const seenRef = useRef(null); if (!seenRef.current) seenRef.current = migrateViewed(seen, history, liked); const likedRef = useRef(liked); likedRef.current = liked
-  const [current, next] = useMemo(() => {
+  const upcoming = useMemo(() => {
     const cards = []
     for (const job of jobs) {
       if (!isViewed(seenRef.current, job)) cards.push(job)
-      if (cards.length === 2) break
+      if (cards.length === 4) break
     }
     return cards
   }, [jobs, seen])
+  const current = upcoming[0]
   useEffect(() => localStorage.setItem(LIKED_KEY, JSON.stringify(liked)), [liked]); useEffect(() => localStorage.setItem(SEEN_KEY, JSON.stringify(seen)), [seen]); useEffect(() => localStorage.setItem(HISTORY_KEY, JSON.stringify(history)), [history])
   useEffect(() => () => { clearTimeout(exitTimer.current); clearTimeout(profileNoticeTimer.current) }, [])
   useEffect(() => { if (!outgoing) decisionLocked.current = false }, [index, outgoing])
   useEffect(() => { if (tab !== 'feed' && pointer.current) { pointer.current = null; setMotion({x: 0, y: 0, dragging: false, exiting: false}) } }, [tab])
   function load() {
     if (requestController.current) return
+    loadedTags.current = null
     const searchProfile = {...initialProfile, ...stored(PROFILE_KEY, initialProfile)}
     setStats({source: 0, matched: 0})
     setIndex(0)
@@ -95,7 +107,18 @@ function App() {
   }
   useEffect(() => { if (tab !== 'feed') return; load(); return () => { requestSequence.current += 1; requestController.current?.abort(); requestController.current = null; setLoading(false) } }, [tab])
   useEffect(() => { if (reloadAfterClear.current) { reloadAfterClear.current = false; if (tab === 'feed') load() } }, [liked, seen, history])
-  function decide(like) { if (!current) return; const reaction = like ? 'liked' : 'skipped'; if (like) setLiked((all) => likedIds.has(current.id) ? all : [...all, current]); const viewed = [...seenRef.current]; localStorage.setItem(SEEN_KEY, JSON.stringify(viewed)); setSeen(viewed); setHistory((entries) => [{job: current, reaction, viewedAt: Date.now()}, ...entries.filter((entry) => entry.job.id !== current.id)]); setIndex((i) => i + 1) }
+  function decide(like) {
+    if (!current) return
+    const reaction = like ? 'liked' : 'skipped'
+    if (like) setLiked((all) => likedIds.has(current.id) ? all : [...all, current])
+    const viewed = [...seenRef.current]
+    localStorage.setItem(SEEN_KEY, JSON.stringify(viewed))
+    setSeen(viewed)
+    const tags = loadedTags.current?.id === current.id ? loadedTags.current.tags : historyTags(current.work_conditions)
+    const entry = {job: current, reaction, tags, viewedAt: Date.now()}
+    setHistory((entries) => [entry, ...entries.filter((item) => item.job.id !== current.id)])
+    setIndex((i) => i + 1)
+  }
   function restoreToLiked(entry) { setLiked((all) => likedIds.has(entry.job.id) ? all : [...all, entry.job]); setHistory((entries) => entries.map((item) => item.job.id === entry.job.id ? {...item, reaction: 'liked'} : item)) }
   function clearHistoryAndFavorites() {
     if (!window.confirm('Очистить историю и избранное? Профиль и фильтры сохранятся.')) return
@@ -156,7 +179,7 @@ function App() {
     setMotion({x: 0, y: 0, dragging: false, exiting: false})
   }
   const displayedJob = outgoing || current
-  const behind = outgoing ? current : next
+  const behind = outgoing ? upcoming.slice(0, 3) : upcoming.slice(1)
   const cardStyle = {transform: `translate3d(${motion.x}px, ${motion.y}px, 0) rotate(${Math.max(-12, Math.min(12, motion.x / 20))}deg)`}
   const nav = [['feed', 'Лента', 'feed'], ['liked', 'Понравившиеся', 'heart'], ['history', 'История', 'history'], ['notifications', 'Уведомления', 'bell']]
   return <div className="app"><aside><strong><i aria-hidden="true">✦</i> JobPilot</strong><p>Найдите работу, которая вам подходит.</p><Nav items={nav} tab={tab} setTab={setTab} count={liked.length}/><button className={tab === 'profile' ? 'profile-nav active' : 'profile-nav'} onClick={() => setTab('profile')}><Icon name="user"/><span>Профиль</span></button></aside><main className={tab === 'feed' ? 'feed-main' : undefined}>
@@ -173,7 +196,8 @@ function App() {
           <button type="button" onClick={resumeSearch}>Повторить загрузку</button>
         </div>}
         {displayedJob && <div className="card-stack">
-          {behind && <div key={`back-${behind.id}`} className={`card-back${outgoing ? ' advancing' : ''}`} aria-hidden="true"/>}
+          {behind.map((job, i) => <div key={`back-${job.id}`} className="card-back" aria-hidden="true"
+            style={{'--depth': outgoing ? i : i + 1, zIndex: -i - 1}}/>)}
           <article key={displayedJob.id} className={`card${motion.dragging ? ' dragging' : ''}${motion.exiting ? ' exiting' : ''}`} style={cardStyle} aria-labelledby="vacancy-title" tabIndex={0}
             onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={cancelPointer} onLostPointerCapture={cancelPointer}>
             <h2 id="vacancy-title">{displayedJob.title}</h2>
@@ -183,10 +207,6 @@ function App() {
               <div><dt>Город</dt><dd>{displayedJob.city || 'Город не указан'}</dd></div>
               {profile.format !== 'any' && <div><dt>Формат по фильтру</dt><dd>{profile.format}</dd></div>}
             </dl>
-            <div className="card-source">
-              <span>Источник</span>
-              <a href={displayedJob.url} target="_blank" rel="noreferrer">{displayedJob.source}<ArrowUpRight aria-hidden="true"/></a>
-            </div>
             {(displayedJob.members?.length > 1 || displayedJob.alternatives?.length > 0) && <details className="group-links">
               <summary>Похожие объявления</summary>
               {[...(displayedJob.members || []).slice(1), ...(displayedJob.alternatives || []).flatMap((item) => item.members?.length ? item.members : [item])].map((item, i) => item.url && <a key={`${item.source}-${item.id}-${i}`} href={item.url} target="_blank" rel="noreferrer">Объявление {i + 2} ↗</a>)}
@@ -203,10 +223,25 @@ function App() {
         <button disabled={Boolean(outgoing)} onClick={() => animateDecision(false)}><ArrowLeft aria-hidden="true"/>Пропустить</button>
         <button disabled={Boolean(outgoing)} onClick={() => animateDecision(true)}>В понравившиеся<ArrowRight aria-hidden="true"/></button>
       </div>}
-      {displayedJob && <VacancyDetails key={displayedJob.id} conditions={displayedJob.work_conditions || {}}/>}
+      {displayedJob && <VacancyDetails key={displayedJob.id} job={displayedJob} apiUrl={API_URL} onLoaded={rememberDetails}/>}
     </section>}
     {tab === 'liked' && <section><header><div><em>Ваша подборка</em><h1>Понравившиеся</h1></div></header>{!liked.length ? <Empty icon="heart" title="Здесь появятся ваши находки" text="Ставьте лайк вакансиям в ленте, чтобы вернуться к ним позже."/> : <div className="liked">{liked.map((job) => <article key={job.id}><a className="liked-link" href={job.url} target="_blank" rel="noopener noreferrer"><h2>{job.title}</h2><p>{job.company || 'Компания не указана'} · {job.city || 'Город не указан'}</p><b>{salary(job)}</b></a><button className="remove-liked" type="button" aria-label={`Удалить из понравившихся: ${job.title}`} onClick={() => { setLiked((all) => all.filter((item) => item.id !== job.id)); setSelected((all) => all.filter((id) => id !== job.id)) }}><Icon name="x"/></button></article>)}</div>}</section>}
-    {tab === 'history' && <section><header><div><em>Ваши действия</em><h1>История</h1></div></header>{!history.length ? <Empty icon="history" title="История пока пуста" text="Просмотренные вакансии и ваши реакции появятся здесь."/> : <div className="history">{history.map((entry) => <article key={entry.job.id}><a className="history-link" href={entry.job.url} target="_blank" rel="noopener noreferrer"><span className={entry.reaction === 'liked' ? 'reaction liked' : 'reaction skipped'}>{entry.reaction === 'liked' ? 'Нравится' : 'Пропущено'}</span><h2>{entry.job.title}</h2><p>{entry.job.company || 'Компания не указана'} · {entry.job.city || 'Город не указан'}</p><b>{salary(entry.job)}</b></a>{entry.reaction === 'skipped' && <button onClick={() => restoreToLiked(entry)}>В понравившиеся</button>}</article>)}</div>}</section>}
+    {tab === 'history' && <section><header><div><h1>История</h1><p className="history-intro">Здесь можно вернуться к просмотренным вакансиям.</p></div></header>
+      {!history.length ? <Empty icon="history" title="История пока пуста" text="Просмотренные вакансии и ваши реакции появятся здесь."/> :
+        <div className="history">{history.map(entry => {
+          const {job, reaction} = entry
+          const tags = entry.tags ?? historyTags(job.work_conditions)
+          return <article key={job.id}>
+            <a className="history-link" href={job.url} target="_blank" rel="noopener noreferrer">
+              <span className={reaction === 'liked' ? 'reaction is-liked' : 'reaction skipped'}>{reaction === 'liked' ? 'Нравится' : 'Пропущено'}</span>
+              <h2>{job.title}</h2><p>{job.company || 'Компания не указана'} · {job.city || 'Город не указан'}</p>
+              <b>{salary(job)}</b>
+              {tags.length > 0 && <ul className="history-tags" aria-label="Условия работы">{tags.map(tag => <li key={tag}>{tag}</li>)}</ul>}
+            </a>
+            {reaction === 'skipped' && <button onClick={() => restoreToLiked(entry)}>В понравившиеся</button>}
+          </article>
+        })}</div>}
+    </section>}
     {tab === 'notifications' && <section><header><div><em>Следите за лентой</em><h1>Уведомления</h1></div></header><Empty icon="bell" title="Уведомлений пока нет" text="Мы пока не отправляем уведомления о новых вакансиях."/></section>}
     {tab === 'responses' && <section><header><div><em>Контроль процесса</em><h1>Отклики</h1></div></header><Empty icon="send" title="Откликов пока нет" text="Выберите вакансии в понравившихся — здесь появится история ваших откликов."/></section>}
     {tab === 'profile' && <section className="profile-page">
